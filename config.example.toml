@@ -1,0 +1,36 @@
+# termul configuration — copy to:
+#   Linux:  ~/.config/termul/config.toml
+#   macOS:  ~/Library/Application Support/termul/config.toml
+#
+# Every field is optional; omitted fields fall back to the defaults shown below.
+# An invalid value (bad color/keybind) is ignored and the default is kept.
+
+[appearance]
+# Accent color (tab bar active, popups, menu highlight). Hex "#rrggbb".
+accent = "#cba6f7"
+# Border color of the focused pane. Hex "#rrggbb" (default is terminal cyan).
+focus_border = "#00d7ff"
+# Minimum tab width on the tab bar.
+tab_min_width = 8
+
+[behavior]
+# Autocomplete popup: max rows shown at once, and how many matches to fetch.
+suggest_max_visible = 10
+suggest_fetch = 50
+
+[keys]
+# Modifier combos: "ctrl+b", "alt+x", "shift+enter", or a bare key like "enter".
+prefix = "ctrl+b"          # enter prefix mode
+quit = "ctrl+q"            # quit immediately
+
+# Single-character commands pressed AFTER the prefix key.
+split_right = "%"          # split left/right
+split_down = "\""          # split top/bottom
+close_pane = "x"           # close focused pane
+tab_new = "c"              # new tab
+tab_next = "n"             # next tab
+tab_prev = "p"             # previous tab
+tab_rename = ","           # rename current tab
+tab_close = "&"            # close current tab
+palette = "r"              # open history palette
+quit_action = "q"          # quit (in prefix mode)
