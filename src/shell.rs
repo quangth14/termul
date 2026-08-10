@@ -45,8 +45,6 @@ if [[ -o interactive ]]; then
     add-zsh-hook preexec _termul_preexec
     add-zsh-hook precmd _termul_precmd
     add-zle-hook-widget line-pre-redraw _termul_report_buffer
-    # Tắt gợi ý inline của zsh-autosuggestions trong pane termul (tránh 2 gợi ý chồng nhau)
-    typeset -g _ZSH_AUTOSUGGEST_DISABLED=1
   }
   add-zsh-hook precmd _termul_init
 fi
