@@ -13,6 +13,12 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v zig >/dev/null 2>&1 || [[ "$(zig version)" != 0.15.* ]]; then
+  echo "Lỗi: libghostty-vt cần Zig 0.15.x (khuyến nghị 0.15.2)." >&2
+  echo "macOS: brew install zig@0.15 && brew link --force --overwrite zig@0.15" >&2
+  exit 1
+fi
+
 echo "==> Build bản release…"
 cargo build --release
 

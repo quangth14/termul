@@ -187,7 +187,7 @@ mod tests {
     use crate::config::Config;
     use crate::confirm::{confirm_option_at, confirm_rect};
     use crate::history::HistoryStore;
-    use crate::input::{encode_key, encode_mouse, scroll_pane};
+    use crate::input::{encode_key, handle_mouse};
     use crate::layout::{Layout, PaneId};
     use crate::menu::{menu_item_at, popup_rect};
     use crate::osc::{OscEvent, OscScanner};
@@ -559,29 +559,32 @@ mod tests {
     }
 
     #[test]
-    fn encode_mouse_sgr_offsets_into_pane() {
+    fn ghostty_encodes_mouse_sgr_offsets_into_pane() {
         let inner = Rect::new(1, 1, 80, 24);
+        let mut grid = TermGrid::new(inner.height, inner.width);
+        grid.process(b"\x1b[?1000h\x1b[?1006h");
         let me = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 1,
             row: 1,
             modifiers: KeyModifiers::NONE,
         };
-        assert_eq!(encode_mouse(me, inner), Some(b"\x1b[<0;1;1M".to_vec()));
+        assert_eq!(grid.encode_mouse(me, inner), Some(b"\x1b[<0;1;1M".to_vec()));
         let me = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
         };
-        assert_eq!(encode_mouse(me, inner), None);
+        assert_eq!(grid.encode_mouse(me, inner), None);
     }
 
     #[test]
     fn wheel_scrolls_normal_pane_scrollback() {
         let mut app = one_pane_app();
         let pid = PaneId(0);
-        // Nhiều newline hơn chiều cao để vt100 có scrollback thực sự.
+        recompute(&mut app, Rect::new(0, 0, 80, 24));
+        // Nhiều newline hơn chiều cao để Ghostty có scrollback thực sự.
         app.panes
             .get_mut(&pid)
             .unwrap()
@@ -595,14 +598,18 @@ mod tests {
             row: 2,
             modifiers: KeyModifiers::NONE,
         };
-        scroll_pane(&mut app, pid, true, wheel_up);
+        handle_mouse(&mut app, wheel_up);
+        assert_eq!(app.panes[&pid].grid.scrollback(), 3);
+
+        // Frame kế tiếp recompute cùng kích thước không được reset scrollback.
+        recompute(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.panes[&pid].grid.scrollback(), 3);
 
         let wheel_down = MouseEvent {
             kind: MouseEventKind::ScrollDown,
             ..wheel_up
         };
-        scroll_pane(&mut app, pid, false, wheel_down);
+        handle_mouse(&mut app, wheel_down);
         assert_eq!(app.panes[&pid].grid.scrollback(), 0);
     }
 }

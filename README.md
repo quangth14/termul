@@ -24,6 +24,7 @@ Triết lý thiết kế:
 ## Yêu cầu
 
 - **Rust** (edition 2024) + Cargo. Khuyến nghị bản mới (đã thử với 1.94.x).
+- **Zig 0.15.2** để build `libghostty-vt` (`brew install zig@0.15` trên macOS).
 - **Shell**: tích hợp đầy đủ (command memory + popup gợi ý) hiện chỉ hỗ trợ **zsh**. Shell khác vẫn chạy được như terminal thường nhưng không có ghi nhớ/gợi ý.
 - macOS hoặc Linux.
 
@@ -41,7 +42,7 @@ Binary sau khi build nằm ở `target/release/termul`.
 
 ## Nó hoạt động thế nào (tóm tắt)
 
-- Mỗi pane là một **PTY** spawn shell của bạn (`$SHELL`), giả lập VT bằng `vt100`, render bằng `ratatui` + `crossterm`.
+- Mỗi pane là một **PTY** spawn shell của bạn (`$SHELL`), giả lập VT và quản lý scrollback/reflow bằng `libghostty-vt`, render bằng `ratatui` + `crossterm`.
 - Với zsh, termul nạp **shell integration** tự động qua một `ZDOTDIR` tạm (không đụng cấu hình gốc của bạn). Integration phát các chuỗi OSC báo: lệnh bắt đầu chạy, exit code, và **nội dung dòng đang gõ** — nhờ đó popup gợi ý hiện được ngay lúc gõ.
 - Trong pane termul, gợi ý inline của **zsh-autosuggestions** được tắt để tránh chồng gợi ý (đặt `_ZSH_AUTOSUGGEST_DISABLED=1`).
 - Lịch sử lưu ở `<data_dir>/termul/history.db`:
@@ -62,7 +63,7 @@ Xem **[USAGE.md](USAGE.md)** để biết chi tiết cách dùng và toàn bộ 
 | `src/ui.rs` | `draw`: vẽ tabbar, panes và các lớp modal theo thứ tự z |
 | `src/layout.rs` | Cây tiling nhị phân (split/close/resize/focus) |
 | `src/pty.rs` | Spawn shell trong PTY + thread đọc output |
-| `src/term.rs` | Bọc `vt100` thành grid + widget render cho ratatui |
+| `src/term.rs` | Bọc `libghostty-vt` thành viewport + widget render cho ratatui |
 | `src/osc.rs` | Máy trạng thái quét chuỗi OSC do shell integration phát |
 | `src/shell.rs` | Nạp shell integration cho zsh qua ZDOTDIR tạm |
 | `src/history.rs` | SQLite: ghi lệnh, gợi ý (contains + frecency), tìm kiếm mờ cho palette |

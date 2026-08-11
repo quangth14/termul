@@ -257,17 +257,12 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
 /// - app có mouse-reporting: forward đúng mouse event;
 /// - alternate screen nhưng không có mouse-reporting (less, pager...): đổi wheel
 ///   thành ba phím mũi tên;
-/// - màn hình thường: cuộn scrollback nội bộ của vt100.
+/// - màn hình thường: cuộn viewport nội bộ của libghostty-vt.
 pub(crate) fn scroll_pane(app: &mut App, pid: PaneId, up: bool, me: MouseEvent) {
     let (has_mouse, in_alt_screen) = app
         .panes
         .get(&pid)
-        .map(|p| {
-            (
-                p.grid.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None,
-                p.grid.in_alt_screen(),
-            )
-        })
+        .map(|p| (p.grid.has_mouse_tracking(), p.grid.in_alt_screen()))
         .unwrap_or((false, false));
 
     if has_mouse {
@@ -286,13 +281,7 @@ pub(crate) fn scroll_pane(app: &mut App, pid: PaneId, up: bool, me: MouseEvent) 
     }
 
     if let Some(pane) = app.panes.get_mut(&pid) {
-        let cur = pane.grid.scrollback();
-        let next = if up {
-            cur.saturating_add(3)
-        } else {
-            cur.saturating_sub(3)
-        };
-        pane.grid.set_scrollback(next);
+        pane.grid.scroll_lines(if up { -3 } else { 3 });
     }
 }
 
@@ -354,13 +343,13 @@ pub(crate) fn forward_mouse(app: &mut App, pid: PaneId, me: MouseEvent) {
     let has_mouse = app
         .panes
         .get(&pid)
-        .map(|p| p.grid.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None)
+        .map(|p| p.grid.has_mouse_tracking())
         .unwrap_or(false);
     if !has_mouse {
         return;
     }
-    if let Some(bytes) = encode_mouse(me, inner)
-        && let Some(pane) = app.panes.get_mut(&pid)
+    if let Some(pane) = app.panes.get_mut(&pid)
+        && let Some(bytes) = pane.grid.encode_mouse(me, inner)
     {
         pane.pty.write(&bytes);
     }
@@ -448,51 +437,4 @@ pub(crate) fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
     }
 
     if out.is_empty() { None } else { Some(out) }
-}
-
-/// Mã hoá sự kiện chuột thành chuỗi SGR (1006): `ESC [ < b ; x ; y (M|m)`.
-pub(crate) fn encode_mouse(me: MouseEvent, inner: Rect) -> Option<Vec<u8>> {
-    if me.column < inner.x
-        || me.row < inner.y
-        || me.column >= inner.x + inner.width
-        || me.row >= inner.y + inner.height
-    {
-        return None;
-    }
-    let cx = me.column - inner.x + 1;
-    let cy = me.row - inner.y + 1;
-
-    let mut cb: u32 = match me.kind {
-        MouseEventKind::Down(b) | MouseEventKind::Up(b) => button_code(b),
-        MouseEventKind::Drag(b) => button_code(b) + 32,
-        MouseEventKind::Moved => 35,
-        MouseEventKind::ScrollUp => 64,
-        MouseEventKind::ScrollDown => 65,
-        MouseEventKind::ScrollLeft => 66,
-        MouseEventKind::ScrollRight => 67,
-    };
-    if me.modifiers.contains(KeyModifiers::SHIFT) {
-        cb += 4;
-    }
-    if me.modifiers.contains(KeyModifiers::ALT) {
-        cb += 8;
-    }
-    if me.modifiers.contains(KeyModifiers::CONTROL) {
-        cb += 16;
-    }
-
-    let final_char = if matches!(me.kind, MouseEventKind::Up(_)) {
-        'm'
-    } else {
-        'M'
-    };
-    Some(format!("\x1b[<{cb};{cx};{cy}{final_char}").into_bytes())
-}
-
-pub(crate) fn button_code(b: MouseButton) -> u32 {
-    match b {
-        MouseButton::Left => 0,
-        MouseButton::Middle => 1,
-        MouseButton::Right => 2,
-    }
 }
