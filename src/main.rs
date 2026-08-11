@@ -177,7 +177,9 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::layout::Rect;
     use ratatui::widgets::Block;
 
@@ -185,7 +187,7 @@ mod tests {
     use crate::config::Config;
     use crate::confirm::{confirm_option_at, confirm_rect};
     use crate::history::HistoryStore;
-    use crate::input::{encode_key, encode_mouse};
+    use crate::input::{encode_key, encode_mouse, scroll_pane};
     use crate::layout::{Layout, PaneId};
     use crate::menu::{menu_item_at, popup_rect};
     use crate::osc::{OscEvent, OscScanner};
@@ -281,15 +283,15 @@ mod tests {
         assert!(app.suggest.is_some(), "buffer đổi khác thì popup mở lại");
     }
 
-    /// Pane đơn phải nằm ngay dưới tabbar (row 0) và **chạm đáy** — không padding.
+    /// Pane đơn phải nằm ngay dưới tabbar (2 hàng) và **chạm đáy** — không padding.
     #[test]
     fn single_pane_fills_below_tabbar() {
         let mut app = one_pane_app();
         recompute(&mut app, Rect::new(0, 0, 80, 24));
         let rect = app.areas[&PaneId(0)];
-        assert_eq!(rect.y, 1, "pane phải bắt đầu ngay dưới tabbar");
+        assert_eq!(rect.y, 2, "pane phải bắt đầu ngay dưới tabbar 2 hàng");
         assert_eq!(rect.y + rect.height, 24, "pane phải chạm đáy màn hình");
-        assert_eq!(app.status_y, 0, "tabbar ở hàng trên cùng");
+        assert_eq!(app.status_y, 1, "hàng tên tab nằm ở row 1 (dưới hàng viền top)");
     }
 
     #[test]
@@ -573,5 +575,34 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         assert_eq!(encode_mouse(me, inner), None);
+    }
+
+    #[test]
+    fn wheel_scrolls_normal_pane_scrollback() {
+        let mut app = one_pane_app();
+        let pid = PaneId(0);
+        // Nhiều newline hơn chiều cao để vt100 có scrollback thực sự.
+        app.panes
+            .get_mut(&pid)
+            .unwrap()
+            .grid
+            .process("line\n".repeat(40).as_bytes());
+        assert_eq!(app.panes[&pid].grid.scrollback(), 0);
+
+        let wheel_up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        scroll_pane(&mut app, pid, true, wheel_up);
+        assert_eq!(app.panes[&pid].grid.scrollback(), 3);
+
+        let wheel_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            ..wheel_up
+        };
+        scroll_pane(&mut app, pid, false, wheel_down);
+        assert_eq!(app.panes[&pid].grid.scrollback(), 0);
     }
 }

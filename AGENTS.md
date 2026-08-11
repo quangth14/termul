@@ -1,0 +1,1 @@
+/Volumes/ExternalSSD/Workspace/Rust/termul/CLAUDE.md

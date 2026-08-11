@@ -92,6 +92,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if let Some(bytes) = encode_key(key)
         && let Some(pane) = app.panes.get_mut(&focus)
     {
+        // Gõ phím → nhảy về đáy để thấy input/output mới nhất.
+        pane.grid.set_scrollback(0);
         pane.pty.write(&bytes);
     }
 }
@@ -238,11 +240,59 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
                 forward_mouse(app, active_focus(app), me);
             }
         }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            if let Some(pid) = pane_at(app, col, row) {
+                scroll_pane(app, pid, matches!(me.kind, MouseEventKind::ScrollUp), me);
+            }
+        }
         _ => {
             if let Some(pid) = pane_at(app, col, row) {
                 forward_mouse(app, pid, me);
             }
         }
+    }
+}
+
+/// Lăn chuột trên pane:
+/// - app có mouse-reporting: forward đúng mouse event;
+/// - alternate screen nhưng không có mouse-reporting (less, pager...): đổi wheel
+///   thành ba phím mũi tên;
+/// - màn hình thường: cuộn scrollback nội bộ của vt100.
+pub(crate) fn scroll_pane(app: &mut App, pid: PaneId, up: bool, me: MouseEvent) {
+    let (has_mouse, in_alt_screen) = app
+        .panes
+        .get(&pid)
+        .map(|p| {
+            (
+                p.grid.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None,
+                p.grid.in_alt_screen(),
+            )
+        })
+        .unwrap_or((false, false));
+
+    if has_mouse {
+        forward_mouse(app, pid, me);
+        return;
+    }
+
+    if in_alt_screen {
+        let key = if up { b"\x1b[A" } else { b"\x1b[B" };
+        if let Some(pane) = app.panes.get_mut(&pid) {
+            for _ in 0..3 {
+                pane.pty.write(key);
+            }
+        }
+        return;
+    }
+
+    if let Some(pane) = app.panes.get_mut(&pid) {
+        let cur = pane.grid.scrollback();
+        let next = if up {
+            cur.saturating_add(3)
+        } else {
+            cur.saturating_sub(3)
+        };
+        pane.grid.set_scrollback(next);
     }
 }
 

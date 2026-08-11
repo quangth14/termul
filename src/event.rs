@@ -3,6 +3,7 @@
 use std::time::Instant;
 
 use crossterm::event::Event;
+use ratatui::style::Color;
 
 use crate::app::*;
 use crate::input::{handle_key, handle_mouse};
@@ -10,13 +11,35 @@ use crate::layout::PaneId;
 use crate::osc::OscEvent;
 use crate::session::{active_focus, do_close};
 use crate::suggest::rebuild_suggest;
+use crate::term::{cursor_position_reply, palette_reply};
 
 pub(crate) fn handle_event(app: &mut App, ev: AppEvent) {
     match ev {
         AppEvent::PtyData(pid, bytes) => {
             let mut osc_events = Vec::new();
             if let Some(pane) = app.panes.get_mut(&pid) {
-                pane.grid.process(&bytes);
+                let queries = pane.grid.process(&bytes);
+                // Codex/Claude dùng OSC 10+11 để suy ra theme và pha màu nền
+                // composer. Không trả lời sẽ khiến chúng rơi về style không nền.
+                if queries.foreground {
+                    pane.pty.write(&palette_reply(10, (248, 248, 242)));
+                }
+                if queries.background {
+                    let bg = match app.cfg.bg {
+                        Color::Rgb(r, g, b) => (r, g, b),
+                        _ => (40, 42, 54),
+                    };
+                    pane.pty.write(&palette_reply(11, bg));
+                }
+                if queries.cursor_position {
+                    pane.pty
+                        .write(&cursor_position_reply(pane.grid.screen().cursor_position()));
+                }
+                // xterm-compatible primary DA. Đồng thời đây là fallback mà
+                // Codex dùng để kết luận keyboard enhancement không được hỗ trợ.
+                if queries.device_attributes || queries.keyboard_flags {
+                    pane.pty.write(b"\x1b[?1;2c");
+                }
                 pane.osc.scan(&bytes, &mut osc_events);
             }
             for ev in osc_events {

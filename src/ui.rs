@@ -1,10 +1,10 @@
 //! Render: hàm `draw` vẽ toàn bộ khung hình (pane, tabbar, các overlay).
 
 use anyhow::Result;
+use ratatui::Terminal;
 use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
-use ratatui::Terminal;
 
 use crate::app::*;
 use crate::menu::popup_rect;
@@ -107,12 +107,16 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             }
             // Chỉ báo cuộn ▲/▼ trên viền phải nếu còn nội dung ẩn.
             let right = rect.x + rect.width - 1;
-            if sug.offset > 0 && let Some(c) = frame.buffer_mut().cell_mut((right, rect.y)) {
+            if sug.offset > 0
+                && let Some(c) = frame.buffer_mut().cell_mut((right, rect.y))
+            {
                 c.set_symbol("▲");
                 c.set_style(Style::default().fg(yellow));
             }
             if sug.offset + visible < sug.matches.len()
-                && let Some(c) = frame.buffer_mut().cell_mut((right, rect.y + rect.height - 1))
+                && let Some(c) = frame
+                    .buffer_mut()
+                    .cell_mut((right, rect.y + rect.height - 1))
             {
                 c.set_symbol("▼");
                 c.set_style(Style::default().fg(yellow));
@@ -140,8 +144,7 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
         // Overlay popup xác nhận (nếu đang mở) — topmost.
         if let Some(dialog) = &app.confirm {
             frame.render_widget(Clear, dialog.rect);
-            let block = Block::bordered()
-                .border_style(Style::default().fg(red));
+            let block = Block::bordered().border_style(Style::default().fg(red));
             let inner = block.inner(dialog.rect);
             frame.render_widget(&block, dialog.rect);
 

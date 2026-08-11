@@ -27,13 +27,14 @@ pub(crate) fn grid_dims(inner: Rect) -> (u16, u16) {
 
 /// Tính lại layout, resize toàn bộ PTY/emulator, và lưu vùng để hit-test.
 pub(crate) fn recompute(app: &mut App, area: Rect) {
-    // Tabbar ở hàng trên cùng; vùng nội dung nằm dưới nó.
-    let status_y = area.y;
+    // Tabbar chiếm 2 hàng trên cùng: hàng viền top + hàng tên tab.
+    // Vùng nội dung nằm dưới nó.
+    let status_y = area.y + 1; // hàng chứa tên tab (dùng để hit-test click)
     let content = Rect::new(
         area.x,
-        area.y + 1,
+        area.y + 2,
         area.width,
-        area.height.saturating_sub(1),
+        area.height.saturating_sub(2),
     );
 
     let mut areas = HashMap::new();
@@ -95,7 +96,6 @@ pub(crate) fn build_status_segs(
             active,
         });
         x += lw;
-        x += 1; // khoảng cách giữa các tab
     }
     segs
 }

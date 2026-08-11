@@ -38,6 +38,13 @@ impl PtySession {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
+        // TermGrid/vt100 và CrosstermBackend đều giữ được màu RGB 24-bit. Khai báo
+        // rõ capability này để TUI khách không tự hạ bảng màu xuống ANSI-256.
+        cmd.env("COLORTERM", "truecolor");
+        // Không để app khách nhận nhầm mình đang chạy trực tiếp trong VS Code,
+        // Kitty... từ TERM_PROGRAM được kế thừa của terminal cha.
+        cmd.env("TERM_PROGRAM", "termul");
+        cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         for (k, v) in extra_env {
             cmd.env(k, v);
         }

@@ -83,7 +83,7 @@ pub(crate) enum StatusKind {
 }
 
 /// Độ rộng tối thiểu của một tab (tên căn giữa, có đệm hai bên).
-pub(crate) const TAB_MIN_W: u16 = 6;
+pub(crate) const TAB_MIN_W: u16 = 8;
 
 /// Một đoạn hiển thị trên statusbar (đồng thời là vùng hit-test).
 pub(crate) struct StatusSeg {
