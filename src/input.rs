@@ -70,8 +70,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
-            // Enter/Tab: chấp nhận gợi ý đang chọn (không submit dòng).
-            KeyCode::Enter | KeyCode::Tab => {
+            // Enter: chấp nhận gợi ý đang chọn (không submit dòng).
+            KeyCode::Enter => {
                 suggest_accept(app);
                 return;
             }

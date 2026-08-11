@@ -54,14 +54,21 @@ Xem **[USAGE.md](USAGE.md)** để biết chi tiết cách dùng và toàn bộ 
 
 | File | Vai trò |
 |------|---------|
-| `src/main.rs` | App state, vòng lặp sự kiện, toàn bộ UI/input (pane, tab, menu, palette, popup) |
+| `src/main.rs` | Entry point: setup terminal, vòng lặp sự kiện (mpsc), spawn input/PTY thread, integration test |
+| `src/app.rs` | `App` — state trung tâm (panes, tabs, layout, modal, config), `AppEvent`, `Pane`, `Tab` |
+| `src/event.rs` | Điều phối `AppEvent`: dữ liệu PTY, marker OSC, phím/chuột |
+| `src/input.rs` | Định tuyến phím/chuột, prefix mode kiểu tmux, encode key/mouse ra PTY |
+| `src/session.rs` | Vòng đời pane/tab (split/close/switch), `recompute` layout, điều hướng focus |
+| `src/ui.rs` | `draw`: vẽ tabbar, panes và các lớp modal theo thứ tự z |
 | `src/layout.rs` | Cây tiling nhị phân (split/close/resize/focus) |
 | `src/pty.rs` | Spawn shell trong PTY + thread đọc output |
 | `src/term.rs` | Bọc `vt100` thành grid + widget render cho ratatui |
 | `src/osc.rs` | Máy trạng thái quét chuỗi OSC do shell integration phát |
 | `src/shell.rs` | Nạp shell integration cho zsh qua ZDOTDIR tạm |
 | `src/history.rs` | SQLite: ghi lệnh, gợi ý (contains + frecency), tìm kiếm mờ cho palette |
+| `src/config.rs` | Nạp `config.toml` (appearance/behavior/keys); field thiếu/sai dùng default |
+| `src/palette.rs` `suggest.rs` `menu.rs` `confirm.rs` `rename.rs` | Các lớp overlay/modal: mỗi file tự quản state + xử lý phím/chuột + render |
 
 ## Trạng thái
 
-Dự án đang phát triển theo lộ trình phân giai đoạn (xem `docs/PLAN.md`). Đã hoàn thành: đa pane tiling, tab + tabbar, command memory, palette lịch sử, popup autocomplete có scroll.
+Dự án đang phát triển. Đã hoàn thành: đa pane tiling, tab + tabbar, command memory, palette lịch sử (có xóa entry bằng `Del`), popup autocomplete có scroll.

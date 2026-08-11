@@ -21,7 +21,11 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
     app.suggest_rect = compute_suggest_rect(app, focus);
 
     let accent = app.cfg.accent;
-    let focus_border = app.cfg.focus_border;
+    let bg = app.cfg.bg;
+    let green = app.cfg.green;
+    let focus_border = app.cfg.blue;
+    let red = app.cfg.red;
+    let yellow = app.cfg.yellow;
     let max_visible = app.cfg.suggest_max_visible;
 
     // Một pane duy nhất → không viền, pane chiếm trọn vùng.
@@ -58,13 +62,12 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
         let bar_bg = Style::default()
             .bg(Color::Rgb(24, 24, 37))
             .fg(Color::Rgb(110, 110, 130));
-        let mauve = accent;
         frame
             .buffer_mut()
             .set_string(0, sy, " ".repeat(area.width as usize), bar_bg);
         for seg in &app.status_segs {
             let style = if seg.active {
-                Style::default().bg(mauve).add_modifier(Modifier::BOLD)
+                Style::default().bg(bg).fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
                 bar_bg
             };
@@ -82,7 +85,7 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             frame.render_widget(Clear, rect);
             let block = Block::bordered()
                 .border_style(Style::default().fg(mauve))
-                .style(Style::default().bg(Color::Rgb(40, 40, 54)));
+                .style(Style::default().bg(bg));
             let inner = block.inner(rect);
             frame.render_widget(&block, rect);
 
@@ -93,7 +96,7 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
                 let style = if idx == sug.selected {
                     Style::default().bg(mauve).fg(Color::Black)
                 } else {
-                    Style::default().bg(Color::Rgb(40, 40, 54)).fg(Color::Gray)
+                    Style::default().bg(bg).fg(Color::Gray)
                 };
                 frame.buffer_mut().set_string(
                     inner.x,
@@ -106,13 +109,13 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             let right = rect.x + rect.width - 1;
             if sug.offset > 0 && let Some(c) = frame.buffer_mut().cell_mut((right, rect.y)) {
                 c.set_symbol("▲");
-                c.set_style(Style::default().fg(mauve));
+                c.set_style(Style::default().fg(yellow));
             }
             if sug.offset + visible < sug.matches.len()
                 && let Some(c) = frame.buffer_mut().cell_mut((right, rect.y + rect.height - 1))
             {
                 c.set_symbol("▼");
-                c.set_style(Style::default().fg(mauve));
+                c.set_style(Style::default().fg(yellow));
             }
         }
 
@@ -122,7 +125,7 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             let items: Vec<ListItem> = menu.items.iter().map(|e| ListItem::new(e.label)).collect();
             let list = List::new(items)
                 .block(Block::bordered().border_style(Style::default().fg(accent)))
-                .style(Style::default().bg(Color::Rgb(24, 24, 37)).fg(Color::Gray))
+                .style(Style::default().bg(bg).fg(Color::Gray))
                 .highlight_style(
                     Style::default()
                         .bg(accent)
@@ -138,21 +141,21 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
         if let Some(dialog) = &app.confirm {
             frame.render_widget(Clear, dialog.rect);
             let block = Block::bordered()
-                .border_style(Style::default().fg(Color::Yellow));
+                .border_style(Style::default().fg(red));
             let inner = block.inner(dialog.rect);
             frame.render_widget(&block, dialog.rect);
 
             let msg = Paragraph::new(CONFIRM_MSG)
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(Color::White).bg(Color::Black));
+                .style(Style::default().fg(Color::White).bg(bg));
             frame.render_widget(msg, Rect::new(inner.x, inner.y, inner.width, 1));
 
             let items: Vec<ListItem> = CONFIRM_OPTS.iter().map(|s| ListItem::new(*s)).collect();
             let list = List::new(items)
-                .style(Style::default().bg(Color::Black).fg(Color::Gray))
+                .style(Style::default().bg(bg).fg(Color::Gray))
                 .highlight_style(
                     Style::default()
-                        .bg(Color::Yellow)
+                        .bg(red)
                         .fg(Color::Black)
                         .add_modifier(Modifier::BOLD),
                 );
@@ -172,7 +175,7 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             let block = Block::bordered()
                 .border_style(Style::default().fg(accent))
                 .title("Rename tab (Enter: OK · Esc: Cancel)")
-                .style(Style::default().bg(Color::Rgb(24, 24, 37)).fg(Color::White));
+                .style(Style::default().bg(bg).fg(Color::White));
             let inner = block.inner(rect);
             frame.render_widget(&block, rect);
             frame.buffer_mut().set_string(
@@ -189,7 +192,7 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
 
         // Overlay history palette — topmost, có ô nhập + con trỏ.
         if let Some(pal) = &app.palette {
-            render_palette(frame, pal, accent);
+            render_palette(frame, pal, accent, bg, green);
             let inner = Block::bordered().inner(pal.rect);
             let cx = inner.x + 2 + pal.query.chars().count() as u16;
             if cx < inner.x + inner.width {

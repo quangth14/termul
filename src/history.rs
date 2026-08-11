@@ -133,6 +133,14 @@ impl HistoryStore {
         scored.truncate(limit);
         scored.into_iter().map(|(e, _, _)| e).collect()
     }
+
+    pub fn remove(&self, cmdline: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM commands WHERE cmdline = ?1",
+            rusqlite::params![cmdline],
+        )?;
+        Ok(())
+    }
 }
 
 fn now_secs() -> u64 {

@@ -6,12 +6,15 @@
 # An invalid value (bad color/keybind) is ignored and the default is kept.
 
 [appearance]
-# Accent color (tab bar active, popups, menu highlight). Hex "#rrggbb".
-accent = "#cba6f7"
-# Border color of the focused pane. Hex "#rrggbb" (default is terminal cyan).
-focus_border = "#00d7ff"
-# Minimum tab width on the tab bar.
-tab_min_width = 8
+# Bảng màu (hex "#rrggbb"). Bỏ trường nào thì dùng mặc định bên dưới.
+bg = "#282a36"      # nền popup/tabbar + tab active
+accent = "#cba6f7"  # viền + highlight mục đang chọn
+green = "#a6e3a1"   # dòng history cùng thư mục (cwd)
+blue = "#89b4fa"    # viền pane đang focus
+red = "#f38ba8"     # popup xác nhận (đóng pane/tab — hành động phá huỷ)
+yellow = "#f9e2af"  # chỉ báo cuộn ▲▼ trong popup gợi ý
+# Độ rộng tối thiểu của một tab trên tab bar.
+tab_min_width = 6
 
 [behavior]
 # Autocomplete popup: max rows shown at once, and how many matches to fetch.

@@ -31,8 +31,12 @@ pub(crate) struct Keymap {
 
 /// Cấu hình đã phân giải (dùng trực tiếp trong App).
 pub(crate) struct Config {
-    pub(crate) accent: Color,
-    pub(crate) focus_border: Color,
+    pub(crate) bg: Color,     // nền popup/tabbar + tab active
+    pub(crate) accent: Color, // viền + highlight chọn
+    pub(crate) green: Color,  // dòng cùng cwd trong history
+    pub(crate) blue: Color,   // viền pane đang focus
+    pub(crate) red: Color,    // popup xác nhận (hành động phá huỷ)
+    pub(crate) yellow: Color, // chỉ báo cuộn ▲▼ / cảnh báo
     pub(crate) tab_min_width: u16,
     pub(crate) suggest_max_visible: usize,
     pub(crate) suggest_fetch: usize,
@@ -42,22 +46,26 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            accent: Color::Rgb(203, 166, 247), // mauve
-            focus_border: Color::Cyan,
+            bg: Color::Rgb(40, 42, 54),        // #282a36
+            accent: Color::Rgb(203, 166, 247), // #cba6f7 mauve
+            green: Color::Rgb(166, 227, 161),  // #a6e3a1
+            blue: Color::Rgb(137, 180, 250),   // #89b4fa
+            red: Color::Rgb(243, 139, 168),    // #f38ba8
+            yellow: Color::Rgb(249, 226, 175), // #f9e2af
             tab_min_width: TAB_MIN_W,
             suggest_max_visible: SUGGEST_MAX_VISIBLE,
             suggest_fetch: SUGGEST_FETCH,
             keys: Keymap {
                 prefix: (KeyModifiers::CONTROL, KeyCode::Char('b')),
                 quit: (KeyModifiers::CONTROL, KeyCode::Char('q')),
-                split_right: '%',
-                split_down: '"',
+                split_right: 'd',
+                split_down: 's',
                 close_pane: 'x',
                 tab_new: 'c',
                 tab_next: 'n',
                 tab_prev: 'p',
                 tab_rename: ',',
-                tab_close: '&',
+                tab_close: 'w',
                 palette: 'r',
                 quit_action: 'q',
             },
@@ -99,8 +107,12 @@ struct FileConfig {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct FileAppearance {
+    bg: Option<String>,
     accent: Option<String>,
-    focus_border: Option<String>,
+    green: Option<String>,
+    blue: Option<String>,
+    red: Option<String>,
+    yellow: Option<String>,
     tab_min_width: Option<u16>,
 }
 
@@ -136,11 +148,12 @@ impl FileConfig {
         let b = self.behavior;
         let k = self.keys;
         Config {
+            bg: a.bg.and_then(|s| parse_color(&s)).unwrap_or(d.bg),
             accent: a.accent.and_then(|s| parse_color(&s)).unwrap_or(d.accent),
-            focus_border: a
-                .focus_border
-                .and_then(|s| parse_color(&s))
-                .unwrap_or(d.focus_border),
+            green: a.green.and_then(|s| parse_color(&s)).unwrap_or(d.green),
+            blue: a.blue.and_then(|s| parse_color(&s)).unwrap_or(d.blue),
+            red: a.red.and_then(|s| parse_color(&s)).unwrap_or(d.red),
+            yellow: a.yellow.and_then(|s| parse_color(&s)).unwrap_or(d.yellow),
             tab_min_width: a.tab_min_width.unwrap_or(d.tab_min_width),
             suggest_max_visible: b.suggest_max_visible.unwrap_or(d.suggest_max_visible),
             suggest_fetch: b.suggest_fetch.unwrap_or(d.suggest_fetch),
@@ -250,6 +263,7 @@ mod tests {
         let toml = r##"
             [appearance]
             accent = "#ff0000"
+            green = "#00ff00"
             [behavior]
             suggest_max_visible = 5
             [keys]
@@ -258,10 +272,12 @@ mod tests {
         let fc: FileConfig = toml::from_str(toml).unwrap();
         let cfg = fc.resolve();
         assert_eq!(cfg.accent, Color::Rgb(255, 0, 0));
+        assert_eq!(cfg.green, Color::Rgb(0, 255, 0));
         assert_eq!(cfg.suggest_max_visible, 5);
         assert_eq!(cfg.keys.prefix, (KeyModifiers::CONTROL, KeyCode::Char('a')));
         // trường không khai báo → giữ mặc định
-        assert_eq!(cfg.focus_border, Color::Cyan);
+        assert_eq!(cfg.blue, Color::Rgb(137, 180, 250));
+        assert_eq!(cfg.bg, Color::Rgb(40, 42, 54));
         assert_eq!(cfg.suggest_fetch, SUGGEST_FETCH);
         assert_eq!(cfg.keys.close_pane, 'x');
     }

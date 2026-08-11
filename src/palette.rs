@@ -69,6 +69,19 @@ pub(crate) fn palette_accept(app: &mut App) {
     }
 }
 
+pub(crate) fn palette_delete(app: &mut App) {
+    let cmdline = app
+        .palette
+        .as_ref()
+        .and_then(|pal| pal.results.get(pal.selected))
+        .map(|entry| entry.cmdline.clone());
+    if let Some(cmdline) = cmdline
+        && app.history.remove(&cmdline).is_ok()
+    {
+        palette_research(app);
+    }
+}
+
 /// Chỉ số kết quả tại (col,row) trong popup.
 pub(crate) fn palette_row_at(pal: &Palette, col: u16, row: u16) -> Option<usize> {
     let inner = Block::bordered().inner(pal.rect);
@@ -84,6 +97,7 @@ pub(crate) fn handle_palette_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.palette = None,
         KeyCode::Enter => palette_accept(app),
+        KeyCode::Delete => palette_delete(app),
         KeyCode::Up => {
             if let Some(pal) = &mut app.palette {
                 pal.selected = pal.selected.saturating_sub(1);
@@ -139,13 +153,13 @@ pub(crate) fn handle_palette_mouse(app: &mut App, me: MouseEvent) {
     }
 }
 
-pub(crate) fn render_palette(frame: &mut Frame, pal: &Palette, accent: Color) {
+pub(crate) fn render_palette(frame: &mut Frame, pal: &Palette, accent: Color, bg: Color, green: Color) {
     let mauve = accent;
     frame.render_widget(Clear, pal.rect);
     let block = Block::bordered()
         .border_style(Style::default().fg(mauve))
-        .title("History — Enter: insert · Esc: close")
-        .style(Style::default().bg(Color::Rgb(24, 24, 37)).fg(Color::Gray));
+        .title("History — Enter: insert · Esc: close · Del: delete")
+        .style(Style::default().bg(bg).fg(Color::Gray));
     let inner = block.inner(pal.rect);
     frame.render_widget(&block, pal.rect);
 
@@ -169,7 +183,7 @@ pub(crate) fn render_palette(frame: &mut Frame, pal: &Palette, accent: Color) {
         let style = if selected {
             Style::default().bg(mauve).fg(Color::Black)
         } else if entry.cwd_match {
-            Style::default().fg(Color::Rgb(166, 227, 161))
+            Style::default().fg(green)
         } else {
             Style::default().fg(Color::Gray)
         };
