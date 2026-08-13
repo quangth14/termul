@@ -255,8 +255,11 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
     }
     match me.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            if let Some(StatusKind::Switch(i)) = status_hit(app, col, row) {
-                switch_tab(app, i);
+            if let Some(kind) = status_hit(app, col, row) {
+                match kind {
+                    StatusKind::Switch(i) => switch_tab(app, i),
+                    StatusKind::NewTab => new_tab(app),
+                }
                 return;
             }
             if let Some(drag) = divider_at(app, col, row) {

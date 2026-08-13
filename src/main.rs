@@ -523,8 +523,8 @@ mod tests {
             },
         ];
         let segs = build_status_segs(&tabs, 1, 80, TAB_MIN_W);
-        // 2 tab → 2 đoạn Switch (không còn nút ✕ hay nút +)
-        assert_eq!(segs.len(), 2);
+        // 2 tab → 2 đoạn Switch và nút thêm tab ở cuối.
+        assert_eq!(segs.len(), 3);
         // đoạn đầu là Switch(0) tại x=0, không active, rộng >= TAB_MIN_W
         assert!(matches!(segs[0].kind, StatusKind::Switch(0)));
         assert_eq!(segs[0].x, 0);
@@ -533,8 +533,48 @@ mod tests {
         // tab index 1 đang active
         assert!(matches!(segs[1].kind, StatusKind::Switch(1)));
         assert!(segs[1].active);
+        assert!(matches!(segs[2].kind, StatusKind::NewTab));
+        assert_eq!(segs[2].text, " + ");
         // x tăng dần
         assert!(segs[1].x > segs[0].x, "x phải tăng dần");
+        assert!(segs[2].x > segs[1].x, "nút + phải nằm sau tab cuối");
+    }
+
+    #[test]
+    fn status_segs_hide_new_tab_button_when_out_of_space() {
+        let tabs = vec![Tab {
+            name: "1".into(),
+            layout: Layout::Leaf(PaneId(0)),
+            focus: PaneId(0),
+        }];
+        let tab_width = crate::session::tab_label("1", TAB_MIN_W)
+            .chars()
+            .count() as u16;
+        let segs = build_status_segs(&tabs, 0, tab_width + 1, TAB_MIN_W);
+        assert_eq!(segs.len(), 1);
+        assert!(matches!(segs[0].kind, StatusKind::Switch(0)));
+    }
+
+    #[test]
+    fn clicking_new_tab_button_creates_and_activates_tab() {
+        let mut app = one_pane_app();
+        recompute(&mut app, Rect::new(0, 0, 80, 24));
+        let add = app
+            .status_segs
+            .iter()
+            .find(|seg| matches!(seg.kind, StatusKind::NewTab))
+            .expect("phải có nút thêm tab");
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: add.x + 1,
+            row: app.status_y,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse(&mut app, click);
+
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 1);
     }
 
     #[test]

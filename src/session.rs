@@ -97,6 +97,16 @@ pub(crate) fn build_status_segs(
         });
         x += lw;
     }
+    let add_label = " + ";
+    let add_width = add_label.chars().count() as u16;
+    if x + add_width <= width {
+        segs.push(StatusSeg {
+            x,
+            text: add_label.into(),
+            kind: StatusKind::NewTab,
+            active: false,
+        });
+    }
     segs
 }
 

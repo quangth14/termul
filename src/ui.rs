@@ -67,15 +67,27 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
         let bar_bg = Style::default()
             .bg(Color::Rgb(24, 24, 37))
             .fg(Color::Rgb(110, 110, 130));
+
+        let active_bg = Style::default()
+            .bg(bg)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+
         frame
             .buffer_mut()
             .set_string(0, sy, " ".repeat(area.width as usize), bar_bg);
         for seg in &app.status_segs {
-            let style = if seg.active {
-                Style::default().bg(bg).fg(Color::White).add_modifier(Modifier::BOLD)
-            } else {
-                bar_bg
-            };
+            let style = if seg.active { active_bg } else { bar_bg };
+
+            if seg.active {
+                frame.buffer_mut().set_string(
+                    seg.x,
+                    app.status_y - 1,
+                    underline_each_char(" ").repeat(seg.text.len()),
+                    Style::default().bg(bg).fg(app.cfg.accent),
+                );
+            }
+
             frame.buffer_mut().set_string(seg.x, sy, &seg.text, style);
         }
 
@@ -234,4 +246,8 @@ pub(crate) fn truncate_pad(s: &str, width: usize) -> String {
         out.extend(std::iter::repeat_n(' ', width - len));
     }
     out
+}
+
+fn underline_each_char(input: &str) -> String {
+    input.chars().flat_map(|ch| [ch, '\u{0332}']).collect()
 }

@@ -80,6 +80,7 @@ pub(crate) struct Tab {
 #[derive(Clone, Copy)]
 pub(crate) enum StatusKind {
     Switch(usize),
+    NewTab,
 }
 
 /// Độ rộng tối thiểu của một tab (tên căn giữa, có đệm hai bên).
