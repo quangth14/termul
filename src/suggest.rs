@@ -23,7 +23,7 @@ pub(crate) fn suggest_scroll_to_selected(sug: &mut Suggest, max_visible: usize) 
 }
 
 /// Dựng lại popup gợi ý cho pane đang focus theo dòng nhập hiện tại.
-/// Chỉ hiện khi con trỏ ở CUỐI dòng và có khớp (contains).
+/// Chỉ hiện khi con trỏ ở CUỐI dòng và có lệnh bắt đầu bằng nội dung đang nhập.
 pub(crate) fn rebuild_suggest(app: &mut App) {
     let focus = active_focus(app);
     let Some(pane) = app.panes.get(&focus) else {
@@ -55,7 +55,7 @@ pub(crate) fn rebuild_suggest(app: &mut App) {
 }
 
 /// Chấp nhận gợi ý đang chọn: thay CẢ dòng nhập bằng lệnh đầy đủ
-/// (vì khớp contains, không thể chỉ gõ thêm đuôi). Ctrl+A + Ctrl+K xoá dòng.
+/// Ctrl+A + Ctrl+K xoá dòng trước khi ghi lệnh đầy đủ.
 pub(crate) fn suggest_accept(app: &mut App) {
     let focus = active_focus(app);
     let Some(sug) = app.suggest.take() else { return };

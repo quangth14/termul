@@ -6,6 +6,8 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 use ratatui::widgets::Block;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use crate::app::*;
 use crate::config::key_matches;
@@ -16,6 +18,7 @@ use crate::palette::*;
 use crate::rename::*;
 use crate::session::*;
 use crate::suggest::*;
+use crate::term::GridPoint;
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if key.kind == KeyEventKind::Release {
@@ -37,6 +40,16 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if app.menu.is_some() {
         handle_menu_key(app, key);
         return;
+    }
+    if is_selection_copy_key(key)
+        && let Some(selection) = app.selection
+        && let Some(pane) = app.panes.get(&selection.pane)
+    {
+        let text = pane.grid.screen().selected_text(selection.range);
+        if !text.trim().is_empty() && write_clipboard(text.as_bytes()) {
+            app.selection = None;
+            return;
+        }
     }
     if app.prefix_active {
         app.prefix_active = false;
@@ -96,6 +109,43 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         pane.grid.set_scrollback(0);
         pane.pty.write(&bytes);
     }
+}
+
+fn is_selection_copy_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c' | 'C'))
+        && matches!(key.modifiers, KeyModifiers::CONTROL)
+}
+
+fn write_clipboard(bytes: &[u8]) -> bool {
+    #[cfg(target_os = "macos")]
+    let commands: &[(&str, &[&str])] = &[("pbcopy", &[])];
+    #[cfg(target_os = "linux")]
+    let commands: &[(&str, &[&str])] = &[
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+    ];
+    #[cfg(target_os = "windows")]
+    let commands: &[(&str, &[&str])] = &[("clip.exe", &[])];
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let commands: &[(&str, &[&str])] = &[];
+
+    commands.iter().any(|(program, args)| {
+        let Ok(mut child) = Command::new(program)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(bytes).is_ok());
+        wrote && child.wait().is_ok_and(|status| status.success())
+    })
 }
 
 pub(crate) fn handle_prefix(app: &mut App, key: KeyEvent) {
@@ -215,7 +265,18 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
             }
             if let Some(pid) = pane_at(app, col, row) {
                 set_active_focus(app, pid);
-                forward_mouse(app, pid, me);
+                let has_mouse = app
+                    .panes
+                    .get(&pid)
+                    .is_some_and(|pane| pane.grid.has_mouse_tracking());
+                if (!has_mouse || me.modifiers.contains(KeyModifiers::SHIFT))
+                    && let Some(point) = pane_point(app, pid, col, row, false)
+                {
+                    app.selection = Some(PaneSelection::new(pid, point));
+                } else {
+                    app.selection = None;
+                    forward_mouse(app, pid, me);
+                }
             }
         }
         MouseEventKind::Down(MouseButton::Right) => {
@@ -229,6 +290,16 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(drag) = app.dragging {
                 apply_drag(app, drag, col, row);
+            } else if let Some(selection) = app.selection
+                && let Some(point) = pane_point(app, selection.pane, col, row, true)
+            {
+                app.selection = Some(PaneSelection {
+                    range: crate::term::GridSelection {
+                        end: point,
+                        ..selection.range
+                    },
+                    ..selection
+                });
             } else {
                 forward_mouse(app, active_focus(app), me);
             }
@@ -236,6 +307,24 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
         MouseEventKind::Up(_) => {
             if app.dragging.is_some() {
                 app.dragging = None;
+            } else if let Some(selection) = app.selection {
+                if let Some(point) = pane_point(app, selection.pane, col, row, true) {
+                    app.selection = Some(PaneSelection {
+                        range: crate::term::GridSelection {
+                            end: point,
+                            ..selection.range
+                        },
+                        ..selection
+                    });
+                }
+
+                if let Some(pane) = app.panes.get(&selection.pane) {
+                    let text = pane.grid.screen().selected_text(selection.range);
+                    if text.trim().is_empty() {
+                        app.selection = None;
+                        return;
+                    }
+                }
             } else {
                 forward_mouse(app, active_focus(app), me);
             }
@@ -312,6 +401,21 @@ pub(crate) fn pane_at(app: &App, col: u16, row: u16) -> Option<PaneId> {
         .iter()
         .find(|(_, r)| within(**r, col, row))
         .map(|(pid, _)| *pid)
+}
+
+/// Đổi toạ độ màn hình sang ô trong viewport của pane.
+/// Khi đang kéo, toạ độ ngoài pane được ghim vào mép gần nhất.
+fn pane_point(app: &App, pid: PaneId, col: u16, row: u16, clamp: bool) -> Option<GridPoint> {
+    let inner = app.inner_areas.get(&pid)?;
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+    if !clamp && !within(*inner, col, row) {
+        return None;
+    }
+    let col = col.clamp(inner.x, inner.x + inner.width - 1) - inner.x;
+    let row = row.clamp(inner.y, inner.y + inner.height - 1) - inner.y;
+    Some(GridPoint { row, col })
 }
 
 pub(crate) fn within(r: Rect, col: u16, row: u16) -> bool {
@@ -437,4 +541,23 @@ pub(crate) fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
     }
 
     if out.is_empty() { None } else { Some(out) }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+
+    fn key(modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('c'), modifiers)
+    }
+
+    #[test]
+    fn selection_copy_key_requires_exact_control_or_super() {
+        assert!(is_selection_copy_key(key(KeyModifiers::SUPER)));
+        assert!(is_selection_copy_key(key(KeyModifiers::CONTROL)));
+        assert!(!is_selection_copy_key(key(KeyModifiers::NONE)));
+        assert!(!is_selection_copy_key(key(
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+    }
 }

@@ -134,6 +134,7 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
         status_y: 0,
         status_segs: Vec::new(),
         dragging: None,
+        selection: None,
         menu: None,
         confirm: None,
         rename: None,
@@ -195,7 +196,7 @@ mod tests {
     use crate::session::{build_status_segs, recompute};
     use crate::shell::ShellIntegration;
     use crate::suggest::{rebuild_suggest, suggest_accept};
-    use crate::term::TermGrid;
+    use crate::term::{GridPoint, TermGrid};
 
     /// Dựng một App tối thiểu với đúng 1 pane để test layout.
     fn one_pane_app() -> App {
@@ -235,6 +236,7 @@ mod tests {
             status_y: 0,
             status_segs: Vec::new(),
             dragging: None,
+            selection: None,
             menu: None,
             confirm: None,
             rename: None,
@@ -577,6 +579,54 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         assert_eq!(grid.encode_mouse(me, inner), None);
+    }
+
+    #[test]
+    fn mouse_selects_normally_and_shift_overrides_mouse_tracking() {
+        let mut app = one_pane_app();
+        let pid = PaneId(0);
+        recompute(&mut app, Rect::new(0, 0, 80, 24));
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut app, down);
+        assert_eq!(
+            app.selection.unwrap().range.anchor,
+            GridPoint { row: 0, col: 2 }
+        );
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 5,
+                row: 3,
+                ..down
+            },
+        );
+        assert_eq!(
+            app.selection.unwrap().range.end,
+            GridPoint { row: 1, col: 5 }
+        );
+
+        app.panes
+            .get_mut(&pid)
+            .unwrap()
+            .grid
+            .process(b"\x1b[?1000h\x1b[?1006h");
+        handle_mouse(&mut app, down);
+        assert!(app.selection.is_none());
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                modifiers: KeyModifiers::SHIFT,
+                ..down
+            },
+        );
+        assert!(app.selection.is_some());
     }
 
     #[test]

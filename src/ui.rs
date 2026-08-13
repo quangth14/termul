@@ -51,6 +51,11 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
                 frame.render_widget(
                     TermView {
                         screen: pane.grid.screen(),
+                        selection: app
+                            .selection
+                            .filter(|selection| selection.pane == *pid)
+                            .map(|selection| selection.range),
+                        default_bg: bg,
                     },
                     inner,
                 );

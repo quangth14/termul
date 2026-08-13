@@ -16,7 +16,7 @@ use crate::layout::{self, Layout, PaneId, SplitDir, SplitId};
 use crate::osc::OscScanner;
 use crate::pty::PtySession;
 use crate::shell::ShellIntegration;
-use crate::term::TermGrid;
+use crate::term::{GridPoint, GridSelection, TermGrid};
 
 /// Sự kiện hợp nhất đẩy vào event loop chính.
 pub(crate) enum AppEvent {
@@ -172,6 +172,7 @@ pub(crate) struct App {
     pub(crate) status_segs: Vec<StatusSeg>,
 
     pub(crate) dragging: Option<DragState>,
+    pub(crate) selection: Option<PaneSelection>,
     pub(crate) menu: Option<ContextMenu>,
     pub(crate) confirm: Option<ConfirmDialog>,
     pub(crate) rename: Option<RenameState>,
@@ -183,4 +184,20 @@ pub(crate) struct App {
     pub(crate) suggest_dismissed_for: Option<String>,
     pub(crate) prefix_active: bool,
     pub(crate) should_quit: bool,
+}
+
+/// Vùng văn bản đang được chọn trong một pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaneSelection {
+    pub(crate) pane: PaneId,
+    pub(crate) range: GridSelection,
+}
+
+impl PaneSelection {
+    pub(crate) fn new(pane: PaneId, point: GridPoint) -> Self {
+        Self {
+            pane,
+            range: GridSelection::new(point),
+        }
+    }
 }

@@ -14,6 +14,38 @@ use ratatui::widgets::Widget;
 
 const MAX_SCROLLBACK_LINES: usize = 100_000;
 
+/// Toạ độ một ô trong viewport terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GridPoint {
+    pub row: u16,
+    pub col: u16,
+}
+
+/// Vùng chọn tuyến tính, tính cả hai đầu mút.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridSelection {
+    pub anchor: GridPoint,
+    pub end: GridPoint,
+}
+
+impl GridSelection {
+    pub fn new(point: GridPoint) -> Self {
+        Self {
+            anchor: point,
+            end: point,
+        }
+    }
+
+    fn contains(self, point: GridPoint) -> bool {
+        let (start, end) = if self.anchor <= self.end {
+            (self.anchor, self.end)
+        } else {
+            (self.end, self.anchor)
+        };
+        point >= start && point <= end
+    }
+}
+
 /// Trạng thái emulator terminal cho một pane.
 pub struct TermGrid {
     terminal: Terminal<'static, 'static>,
@@ -338,6 +370,40 @@ impl TermScreen {
         (row < self.rows && col < self.cols)
             .then(|| &self.cells[row as usize * self.cols as usize + col as usize])
     }
+
+    /// Lấy nội dung text của vùng chọn trong viewport hiện tại.
+    pub fn selected_text(&self, selection: GridSelection) -> String {
+        let (start, end) = if selection.anchor <= selection.end {
+            (selection.anchor, selection.end)
+        } else {
+            (selection.end, selection.anchor)
+        };
+        let mut lines = Vec::new();
+        for row in start.row..=end.row.min(self.rows.saturating_sub(1)) {
+            let first_col = if row == start.row { start.col } else { 0 };
+            let last_col = if row == end.row {
+                end.col
+            } else {
+                self.cols.saturating_sub(1)
+            };
+            let mut line = String::new();
+            for col in first_col..=last_col.min(self.cols.saturating_sub(1)) {
+                let Some(cell) = self.cell(row, col) else {
+                    continue;
+                };
+                if cell.wide == CellWideKind::Spacer {
+                    continue;
+                }
+                if cell.contents.is_empty() {
+                    line.push(' ');
+                } else {
+                    line.push_str(&cell.contents);
+                }
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
 }
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
@@ -361,6 +427,16 @@ fn convert_color(color: Option<RgbColor>) -> Color {
 /// Widget vẽ snapshot viewport của Ghostty vào một `Rect`.
 pub struct TermView<'a> {
     pub screen: &'a TermScreen,
+    pub selection: Option<GridSelection>,
+    pub default_bg: Color,
+}
+
+fn blend_selection_bg(bg: Color, default_bg: Color) -> Color {
+    let Color::Rgb(r, g, b) = bg else {
+        return blend_selection_bg(default_bg, Color::Rgb(40, 42, 54));
+    };
+    let blend = |channel: u8| ((u16::from(channel) * 7 + 128 * 3) / 10) as u8;
+    Color::Rgb(blend(r), blend(g), blend(b))
 }
 
 impl Widget for TermView<'_> {
@@ -384,10 +460,20 @@ impl Widget for TermView<'_> {
                     });
                     let mut fg = convert_color(cell.fg);
                     let mut bg = convert_color(cell.bg);
-                    if cell.inverse {
+                    let selected = self
+                        .selection
+                        .is_some_and(|selection| selection.contains(GridPoint { row, col }));
+                    let reverse_defaults = cell.inverse && fg == bg && !selected;
+                    if cell.inverse && !reverse_defaults {
                         std::mem::swap(&mut fg, &mut bg);
                     }
+                    if selected {
+                        bg = blend_selection_bg(bg, self.default_bg);
+                    }
                     let mut style = Style::default().fg(fg).bg(bg);
+                    if reverse_defaults {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
                     if cell.bold {
                         style = style.add_modifier(Modifier::BOLD);
                     }
@@ -425,11 +511,82 @@ mod tests {
         let mut buf = Buffer::empty(area);
         TermView {
             screen: grid.screen(),
+            selection: None,
+            default_bg: Color::Rgb(40, 42, 54),
         }
         .render(area, &mut buf);
         let cell = &buf[(0, 0)];
         assert_eq!(cell.fg, Color::Rgb(12, 34, 56));
         assert!(cell.modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn selection_contains_points_in_both_drag_directions() {
+        let start = GridPoint { row: 1, col: 2 };
+        let end = GridPoint { row: 2, col: 1 };
+        let forward = GridSelection { anchor: start, end };
+        let backward = GridSelection {
+            anchor: end,
+            end: start,
+        };
+
+        for selection in [forward, backward] {
+            assert!(selection.contains(start));
+            assert!(selection.contains(GridPoint { row: 1, col: 7 }));
+            assert!(selection.contains(end));
+            assert!(!selection.contains(GridPoint { row: 1, col: 1 }));
+            assert!(!selection.contains(GridPoint { row: 2, col: 2 }));
+        }
+    }
+
+    #[test]
+    fn selection_blends_gray_over_rendered_background() {
+        let area = Rect::new(0, 0, 2, 1);
+        let mut grid = TermGrid::new(1, 2);
+        grid.process(b"\x1b[38;2;12;34;56;48;2;60;70;80mXY");
+        let mut buf = Buffer::empty(area);
+        TermView {
+            screen: grid.screen(),
+            selection: Some(GridSelection {
+                anchor: GridPoint { row: 0, col: 0 },
+                end: GridPoint { row: 0, col: 0 },
+            }),
+            default_bg: Color::Rgb(40, 42, 54),
+        }
+        .render(area, &mut buf);
+
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(12, 34, 56));
+        assert_eq!(buf[(0, 0)].bg, Color::Rgb(80, 87, 94));
+        assert_eq!(buf[(1, 0)].fg, Color::Rgb(12, 34, 56));
+        assert_eq!(buf[(1, 0)].bg, Color::Rgb(60, 70, 80));
+    }
+
+    #[test]
+    fn selection_blends_gray_over_default_terminal_background() {
+        let area = Rect::new(0, 0, 1, 1);
+        let mut grid = TermGrid::new(1, 1);
+        grid.process(b"X");
+        let mut buf = Buffer::empty(area);
+        TermView {
+            screen: grid.screen(),
+            selection: Some(GridSelection::new(GridPoint { row: 0, col: 0 })),
+            default_bg: Color::Rgb(40, 42, 54),
+        }
+        .render(area, &mut buf);
+
+        assert_eq!(buf[(0, 0)].bg, Color::Rgb(66, 67, 76));
+    }
+
+    #[test]
+    fn selected_text_handles_reverse_drag_rows_and_wide_cells() {
+        let mut grid = TermGrid::new(2, 8);
+        grid.process("ab中 d\r\nef".as_bytes());
+        let selection = GridSelection {
+            anchor: GridPoint { row: 1, col: 1 },
+            end: GridPoint { row: 0, col: 1 },
+        };
+
+        assert_eq!(grid.screen().selected_text(selection), "b中 d\nef");
     }
 
     #[test]

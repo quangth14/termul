@@ -69,7 +69,7 @@ impl HistoryStore {
         let now = now_secs() as i64;
         let mut scored: Vec<(String, f64)> = Vec::new();
         for (cmdline, last_ts, cnt, cwd_match) in self.aggregate(cwd) {
-            if cmdline != query && cmdline.to_lowercase().contains(&needle) {
+            if cmdline != query && cmdline.to_lowercase().starts_with(&needle) {
                 scored.push((cmdline, frecency(now, last_ts, cnt, cwd_match)));
             }
         }
@@ -191,15 +191,15 @@ mod tests {
     }
 
     #[test]
-    fn suggest_contains() {
+    fn suggest_starts_with() {
         let store = HistoryStore::open(":memory:".into()).unwrap();
         store.record("git status", "/repo", 0, 5);
         store.record("git stash", "/repo", 0, 5);
         store.record("cargo build", "/repo", 0, 5);
 
-        // "status" nằm GIỮA lệnh → contains khớp (startsWith sẽ không)
+        // "status" nằm giữa lệnh → không khớp startsWith.
         let s = store.suggest("status", "/repo", 10);
-        assert!(s.contains(&"git status".to_string()));
+        assert!(!s.contains(&"git status".to_string()));
 
         // Không phân biệt hoa/thường
         let s = store.suggest("GIT", "/repo", 10);
