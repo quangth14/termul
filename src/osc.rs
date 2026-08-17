@@ -10,8 +10,12 @@ pub enum OscEvent {
     CommandStart { cmd: String, cwd: String },
     /// Lệnh kết thúc: exit code.
     CommandEnd { exit: i32 },
-    /// Dòng nhập hiện tại thay đổi: vị trí con trỏ (theo ký tự) + nội dung.
-    BufferUpdate { cursor: usize, buffer: String },
+    /// Dòng nhập hiện tại thay đổi: vị trí con trỏ, nội dung và cwd hiện tại.
+    BufferUpdate {
+        cursor: usize,
+        buffer: String,
+        cwd: String,
+    },
 }
 
 #[derive(PartialEq)]
@@ -94,10 +98,12 @@ fn parse_payload(buf: &[u8]) -> Option<OscEvent> {
             exit: rest.parse().ok()?,
         })
     } else if let Some(rest) = s.strip_prefix("1337;TermulBuf=") {
-        let (cursor, b64buf) = rest.split_once(';')?;
+        let (cursor, rest) = rest.split_once(';')?;
+        let (b64buf, b64cwd) = rest.split_once(';')?;
         Some(OscEvent::BufferUpdate {
             cursor: cursor.parse().ok()?,
             buffer: b64(b64buf)?,
+            cwd: b64(b64cwd)?,
         })
     } else {
         None
@@ -145,6 +151,26 @@ mod tests {
             vec![OscEvent::CommandStart {
                 cmd: "echo hi".into(),
                 cwd: "/h".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_buffer_update_with_cwd() {
+        let mut sc = OscScanner::default();
+        let mut out = Vec::new();
+        let update = format!(
+            "\x1b]1337;TermulBuf=1;{};{}\x07",
+            enc("@"),
+            enc("/tmp/project")
+        );
+        sc.scan(update.as_bytes(), &mut out);
+        assert_eq!(
+            out,
+            vec![OscEvent::BufferUpdate {
+                cursor: 1,
+                buffer: "@".into(),
+                cwd: "/tmp/project".into(),
             }]
         );
     }

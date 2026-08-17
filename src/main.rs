@@ -10,6 +10,7 @@ mod history;
 mod input;
 mod layout;
 mod menu;
+mod mention;
 mod osc;
 mod palette;
 mod pty;
@@ -97,6 +98,7 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
     let cfg = Config::load();
 
     let first_id = PaneId(0);
+    let initial_cwd = std::env::current_dir()?.to_string_lossy().into_owned();
     let env = integ.env_for(&shell);
     let pty = PtySession::spawn(first_id, init_rows, init_cols, &shell, &env, tx.clone())?;
     spawn_input_thread(tx.clone());
@@ -108,7 +110,7 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
                 grid: TermGrid::new(init_rows, init_cols),
                 pty,
                 osc: OscScanner::default(),
-                cwd: String::new(),
+                cwd: initial_cwd,
                 pending: None,
                 input: InputLine::default(),
             },
@@ -139,6 +141,9 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
         confirm: None,
         rename: None,
         palette: None,
+        mention: None,
+        mention_rect: None,
+        mention_generation: 0,
         suggest: None,
         suggest_rect: None,
         suggest_dismissed_for: None,
@@ -241,6 +246,9 @@ mod tests {
             confirm: None,
             rename: None,
             palette: None,
+            mention: None,
+            mention_rect: None,
+            mention_generation: 0,
             suggest: None,
             suggest_rect: None,
             suggest_dismissed_for: None,
@@ -370,7 +378,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // Cài hook zle TRỄ (trong precmd, sau khi zle sẵn sàng) và ghi /dev/tty.
         let hooks = "autoload -Uz add-zsh-hook add-zle-hook-widget\n\
-            _tc_buf() { printf '\\e]1337;TermulBuf=%d;%s\\a' \"$CURSOR\" \"$(print -rn -- \"$BUFFER\" | base64 | tr -d '\\n')\" >/dev/tty; }\n\
+            _tc_buf() { printf '\\e]1337;TermulBuf=%d;%s;%s\\a' \"$CURSOR\" \"$(print -rn -- \"$BUFFER\" | base64 | tr -d '\\n')\" \"$(print -rn -- \"$PWD\" | base64 | tr -d '\\n')\" >/dev/tty; }\n\
             _tc_init() { add-zsh-hook -d precmd _tc_init; add-zle-hook-widget line-pre-redraw _tc_buf; }\n\
             add-zsh-hook precmd _tc_init\n";
         std::fs::write(dir.join(".zshenv"), hooks).unwrap();
@@ -389,10 +397,15 @@ mod tests {
             if let Ok(AppEvent::PtyData(_, bytes)) = rx.recv_timeout(Duration::from_millis(200)) {
                 scanner.scan(&bytes, &mut events);
                 for ev in events.drain(..) {
-                    if let OscEvent::BufferUpdate { cursor, buffer } = ev
+                    if let OscEvent::BufferUpdate {
+                        cursor,
+                        buffer,
+                        cwd,
+                    } = ev
                         && buffer == "ls"
                     {
                         assert_eq!(cursor, 2);
+                        assert!(!cwd.is_empty());
                         saw_ls = true;
                     }
                 }

@@ -112,7 +112,38 @@ Khi bạn gõ trong pane (zsh), termul tra lịch sử và hiện **popup** ngay
 
 ***
 
-## 6. History palette (`Ctrl+B r`)
+## 6. Mention file và thư mục
+
+Trong pane dùng zsh, gõ `@` để mở popup tìm file và thư mục bên dưới **thư mục hiện tại (`cwd`)**. Phần nằm sau `@` được fuzzy match trên toàn bộ đường dẫn, vì vậy `@srcmn` có thể tìm thấy `src/main.rs`. Mention vẫn hoạt động khi con trỏ ở giữa dòng lệnh.
+
+| Phím      | Chức năng                                      |
+| --------- | ---------------------------------------------- |
+| `↓` / `↑` | Di chuyển mục chọn                             |
+| `Enter`   | Chèn đường dẫn đang chọn vào dòng lệnh         |
+| `Esc`     | Đóng popup mention                             |
+| Click     | Chọn và chèn file hoặc thư mục được click      |
+| Cuộn      | Di chuyển danh sách khi popup có nhiều kết quả |
+
+Khi chấp nhận, termul bỏ `@query` và chèn đường dẫn tương đối có tiền tố `./`, ví dụ `@src/ma` thành `./src/main.rs`. Ký tự đặc biệt được tự escape cho shell, ví dụ `./My\ Folder/file.txt`. Phần còn lại của dòng lệnh và vị trí con trỏ được giữ nguyên.
+
+Các đường dẫn bị `.gitignore` và toàn bộ thư mục `.git/` không xuất hiện. Dotfile như `.env` hoặc `.github/` vẫn được hiển thị nếu không bị ignore.
+
+Có thể bổ sung pattern exclude trong `config.toml`; pattern dùng cú pháp `.gitignore` và được tính tương đối từ `cwd` của pane:
+
+```toml
+[mention]
+exclude = [
+  "target/",
+  "*.log",
+  "secrets/**",
+]
+```
+
+Pattern cấu hình được áp dụng bổ sung bên cạnh `.gitignore`. Pattern không hợp lệ được bỏ qua riêng lẻ và không làm hỏng các pattern còn lại.
+
+***
+
+## 7. History palette (`Ctrl+B r`)
 
 Bảng tìm kiếm mờ toàn bộ lịch sử lệnh:
 
@@ -128,7 +159,7 @@ Kết quả xếp hạng theo frecency; lệnh cùng thư mục hiện tại đ�
 
 ***
 
-## 7. Hộp xác nhận & đổi tên
+## 8. Hộp xác nhận & đổi tên
 
 * **Xác nhận đóng pane cuối:** `y`/`Y` để thoát, `n`/`N` hoặc `Esc` để huỷ; hoặc dùng `←`/`→`/`↑`/`↓` chọn nút rồi `Enter`.
 
@@ -136,12 +167,12 @@ Kết quả xếp hạng theo frecency; lệnh cùng thư mục hiện tại đ�
 
 ***
 
-## 8. Thứ tự ưu tiên xử lý input
+## 9. Thứ tự ưu tiên xử lý input
 
 Khi nhiều lớp giao diện cùng mở, input được xử lý theo thứ tự:
 
 ```
-palette  >  rename  >  confirm  >  menu  >  popup gợi ý  >  pane
+palette  >  rename  >  confirm  >  menu  >  popup mention  >  popup gợi ý  >  pane
 ```
 
 Nghĩa là nếu palette đang mở thì phím đi vào palette; nếu không có modal nào, phím đi thẳng vào shell của pane đang focus.

@@ -8,6 +8,7 @@ use ratatui::style::Color;
 use crate::app::*;
 use crate::input::{handle_key, handle_mouse};
 use crate::layout::PaneId;
+use crate::mention::rebuild_mention;
 use crate::osc::OscEvent;
 use crate::session::{active_focus, do_close};
 use crate::suggest::rebuild_suggest;
@@ -56,6 +57,21 @@ pub(crate) fn handle_event(app: &mut App, ev: AppEvent) {
         AppEvent::Term(Event::Mouse(me)) => handle_mouse(app, me),
         AppEvent::Term(Event::Resize(_, _)) => {}
         AppEvent::Term(_) => {}
+        AppEvent::MentionReady(result) => {
+            if result.pane == active_focus(app)
+                && result.generation == app.mention_generation
+                && !result.matches.is_empty()
+            {
+                app.mention = Some(Mention {
+                    token_start: result.token_start,
+                    token_end: result.token_end,
+                    matches: result.matches,
+                    selected: 0,
+                    offset: 0,
+                });
+                app.suggest = None;
+            }
+        }
     }
 }
 
@@ -72,6 +88,7 @@ pub(crate) fn handle_osc(app: &mut App, pid: PaneId, ev: OscEvent) {
                 });
             }
             app.suggest = None;
+            app.mention = None;
             app.suggest_dismissed_for = None;
         }
         OscEvent::CommandEnd { exit } => {
@@ -81,13 +98,23 @@ pub(crate) fn handle_osc(app: &mut App, pid: PaneId, ev: OscEvent) {
                 app.history.record(&p.cmd, &p.cwd, exit, dur);
             }
             app.suggest = None; // lệnh đã chạy → ẩn popup
+            app.mention = None;
         }
-        OscEvent::BufferUpdate { cursor, buffer } => {
+        OscEvent::BufferUpdate {
+            cursor,
+            buffer,
+            cwd,
+        } => {
             if let Some(pane) = app.panes.get_mut(&pid) {
                 pane.input = InputLine { buffer, cursor };
+                pane.cwd = cwd;
             }
             if pid == active_focus(app) {
-                rebuild_suggest(app);
+                if !rebuild_mention(app) {
+                    rebuild_suggest(app);
+                } else {
+                    app.suggest = None;
+                }
             }
         }
     }

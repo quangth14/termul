@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::app::*;
 use crate::menu::popup_rect;
+use crate::mention::compute_mention_rect;
 use crate::palette::render_palette;
 use crate::session::{active_focus, recompute};
 use crate::suggest::{compute_suggest_rect, suggest_visible};
@@ -18,6 +19,7 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
     let area = Rect::new(0, 0, size.width, size.height);
     recompute(app, area);
     let focus = active_focus(app);
+    app.mention_rect = compute_mention_rect(app, focus);
     app.suggest_rect = compute_suggest_rect(app, focus);
 
     let accent = app.cfg.accent;
@@ -91,11 +93,44 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             frame.buffer_mut().set_string(seg.x, sy, &seg.text, style);
         }
 
+        // Popup mention file/thư mục (ưu tiên hơn gợi ý history).
+        if app.menu.is_none()
+            && app.confirm.is_none()
+            && app.rename.is_none()
+            && app.palette.is_none()
+            && let (Some(mention), Some(rect)) = (&app.mention, app.mention_rect)
+        {
+            frame.render_widget(Clear, rect);
+            let block = Block::bordered()
+                .title(" Files ")
+                .border_style(Style::default().fg(green))
+                .style(Style::default().bg(bg));
+            let inner = block.inner(rect);
+            frame.render_widget(&block, rect);
+            let visible = mention.matches.len().min(max_visible);
+            for row in 0..visible {
+                let idx = mention.offset + row;
+                let Some(path) = mention.matches.get(idx) else { break };
+                let style = if idx == mention.selected {
+                    Style::default().bg(green).fg(Color::Black)
+                } else {
+                    Style::default().bg(bg).fg(Color::Gray)
+                };
+                frame.buffer_mut().set_string(
+                    inner.x,
+                    inner.y + row as u16,
+                    truncate_pad(path, inner.width as usize),
+                    style,
+                );
+            }
+        }
+
         // Popup gợi ý autocomplete (chỉ khi không có modal khác).
         if app.menu.is_none()
             && app.confirm.is_none()
             && app.rename.is_none()
             && app.palette.is_none()
+            && app.mention.is_none()
             && let (Some(sug), Some(rect)) = (&app.suggest, app.suggest_rect)
         {
             let mauve = accent;

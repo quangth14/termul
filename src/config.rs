@@ -40,6 +40,7 @@ pub(crate) struct Config {
     pub(crate) tab_min_width: u16,
     pub(crate) suggest_max_visible: usize,
     pub(crate) suggest_fetch: usize,
+    pub(crate) mention_exclude: Vec<String>,
     pub(crate) keys: Keymap,
 }
 
@@ -55,6 +56,7 @@ impl Default for Config {
             tab_min_width: TAB_MIN_W,
             suggest_max_visible: SUGGEST_MAX_VISIBLE,
             suggest_fetch: SUGGEST_FETCH,
+            mention_exclude: Vec::new(),
             keys: Keymap {
                 prefix: (KeyModifiers::CONTROL, KeyCode::Char('b')),
                 quit: (KeyModifiers::CONTROL, KeyCode::Char('q')),
@@ -101,6 +103,7 @@ fn config_path() -> Option<PathBuf> {
 struct FileConfig {
     appearance: FileAppearance,
     behavior: FileBehavior,
+    mention: FileMention,
     keys: FileKeys,
 }
 
@@ -121,6 +124,12 @@ struct FileAppearance {
 struct FileBehavior {
     suggest_max_visible: Option<usize>,
     suggest_fetch: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct FileMention {
+    exclude: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -146,6 +155,7 @@ impl FileConfig {
         let d = Config::default();
         let a = self.appearance;
         let b = self.behavior;
+        let m = self.mention;
         let k = self.keys;
         Config {
             bg: a.bg.and_then(|s| parse_color(&s)).unwrap_or(d.bg),
@@ -157,6 +167,7 @@ impl FileConfig {
             tab_min_width: a.tab_min_width.unwrap_or(d.tab_min_width),
             suggest_max_visible: b.suggest_max_visible.unwrap_or(d.suggest_max_visible),
             suggest_fetch: b.suggest_fetch.unwrap_or(d.suggest_fetch),
+            mention_exclude: m.exclude,
             keys: Keymap {
                 prefix: k.prefix.and_then(|s| parse_bind(&s)).unwrap_or(d.keys.prefix),
                 quit: k.quit.and_then(|s| parse_bind(&s)).unwrap_or(d.keys.quit),
@@ -266,6 +277,8 @@ mod tests {
             green = "#00ff00"
             [behavior]
             suggest_max_visible = 5
+            [mention]
+            exclude = ["target/", "*.log"]
             [keys]
             prefix = "ctrl+a"
         "##;
@@ -274,6 +287,7 @@ mod tests {
         assert_eq!(cfg.accent, Color::Rgb(255, 0, 0));
         assert_eq!(cfg.green, Color::Rgb(0, 255, 0));
         assert_eq!(cfg.suggest_max_visible, 5);
+        assert_eq!(cfg.mention_exclude, ["target/", "*.log"]);
         assert_eq!(cfg.keys.prefix, (KeyModifiers::CONTROL, KeyCode::Char('a')));
         // trường không khai báo → giữ mặc định
         assert_eq!(cfg.blue, Color::Rgb(137, 180, 250));

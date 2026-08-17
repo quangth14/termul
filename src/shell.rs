@@ -36,7 +36,10 @@ if [[ -o interactive ]]; then
   # Báo dòng nhập hiện tại mỗi lần zle vẽ lại (để termul hiện popup gợi ý).
   # Phải ghi thẳng /dev/tty: trong widget zle, stdout không được flush ra terminal.
   _termul_report_buffer() {
-    printf '\e]1337;TermulBuf=%d;%s\a' "$CURSOR" "$(print -rn -- "$BUFFER" | base64 | tr -d '\n')" >/dev/tty
+    local b64buf b64cwd
+    b64buf="$(print -rn -- "$BUFFER" | base64 | tr -d '\n')"
+    b64cwd="$(print -rn -- "$PWD" | base64 | tr -d '\n')"
+    printf '\e]1337;TermulBuf=%d;%s;%s\a' "$CURSOR" "$b64buf" "$b64cwd" >/dev/tty
   }
 
   # Cài hook sau khi .zshrc của user nạp xong (một lần) để không bị plugin ghi đè

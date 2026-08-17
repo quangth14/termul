@@ -14,6 +14,7 @@ use crate::config::key_matches;
 use crate::confirm::*;
 use crate::layout::{PaneId, SplitDir};
 use crate::menu::*;
+use crate::mention::*;
 use crate::palette::*;
 use crate::rename::*;
 use crate::session::*;
@@ -64,6 +65,36 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if key_matches(key.code, key.modifiers, app.cfg.keys.quit) {
         app.should_quit = true;
         return;
+    }
+    // Popup mention ưu tiên hơn gợi ý history.
+    if app.mention.is_some() {
+        let mv = app.cfg.suggest_max_visible;
+        match key.code {
+            KeyCode::Down => {
+                if let Some(mention) = &mut app.mention {
+                    mention.selected =
+                        (mention.selected + 1).min(mention.matches.len().saturating_sub(1));
+                    mention_scroll_to_selected(mention, mv);
+                }
+                return;
+            }
+            KeyCode::Up => {
+                if let Some(mention) = &mut app.mention {
+                    mention.selected = mention.selected.saturating_sub(1);
+                    mention_scroll_to_selected(mention, mv);
+                }
+                return;
+            }
+            KeyCode::Enter => {
+                mention_accept(app);
+                return;
+            }
+            KeyCode::Esc => {
+                app.mention = None;
+                return;
+            }
+            _ => {}
+        }
     }
     // Popup gợi ý đang mở: bắt phím điều hướng (không forward xuống shell).
     if app.suggest.is_some() {
@@ -209,6 +240,43 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
     if app.menu.is_some() {
         handle_menu_mouse(app, me);
         return;
+    }
+    // Popup mention: hover chọn, click chấp nhận, cuộn wheel.
+    if let Some(rect) = app.mention_rect {
+        let inner = Block::bordered().inner(rect);
+        let mv = app.cfg.suggest_max_visible;
+        if within(inner, col, row) {
+            match me.kind {
+                MouseEventKind::ScrollDown => {
+                    if let Some(mention) = &mut app.mention {
+                        mention.selected =
+                            (mention.selected + 1).min(mention.matches.len().saturating_sub(1));
+                        mention_scroll_to_selected(mention, mv);
+                    }
+                    return;
+                }
+                MouseEventKind::ScrollUp => {
+                    if let Some(mention) = &mut app.mention {
+                        mention.selected = mention.selected.saturating_sub(1);
+                        mention_scroll_to_selected(mention, mv);
+                    }
+                    return;
+                }
+                MouseEventKind::Moved | MouseEventKind::Drag(_) | MouseEventKind::Down(_) => {
+                    if let Some(mention) = &mut app.mention {
+                        let idx = mention.offset + (row - inner.y) as usize;
+                        if idx < mention.matches.len() {
+                            mention.selected = idx;
+                        }
+                    }
+                    if matches!(me.kind, MouseEventKind::Down(_)) {
+                        mention_accept(app);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
     }
     // Popup gợi ý: hover chọn, click chấp nhận, cuộn wheel (toạ độ theo vùng trong viền).
     if let Some(rect) = app.suggest_rect {

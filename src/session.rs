@@ -114,6 +114,7 @@ pub(crate) fn build_status_segs(
 
 pub(crate) fn spawn_pane(app: &mut App) -> Option<PaneId> {
     let id = PaneId(app.next_pane);
+    let cwd = std::env::current_dir().ok()?.to_string_lossy().into_owned();
     // Kích thước khởi tạo tuỳ ý — recompute() sẽ resize lại ngay.
     let env = app.integ.env_for(&app.shell);
     let pty = PtySession::spawn(id, 24, 80, &app.shell, &env, app.tx.clone()).ok()?;
@@ -124,7 +125,7 @@ pub(crate) fn spawn_pane(app: &mut App) -> Option<PaneId> {
             grid: TermGrid::new(24, 80),
             pty,
             osc: OscScanner::default(),
-            cwd: String::new(),
+            cwd,
             pending: None,
             input: InputLine::default(),
         },

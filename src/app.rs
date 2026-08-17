@@ -26,6 +26,8 @@ pub(crate) enum AppEvent {
     PtyClosed(PaneId),
     /// Sự kiện terminal (phím/chuột/resize) từ crossterm.
     Term(Event),
+    /// Kết quả quét file cho popup mention từ worker nền.
+    MentionReady(MentionResult),
 }
 
 pub(crate) type Backend = CrosstermBackend<Stdout>;
@@ -67,6 +69,24 @@ pub(crate) struct Suggest {
     pub(crate) matches: Vec<String>,
     pub(crate) selected: usize,
     pub(crate) offset: usize, // chỉ số dòng đầu tiên đang hiển thị (cuộn)
+}
+
+/// Một kết quả quét mention, có generation để loại kết quả đã cũ.
+pub(crate) struct MentionResult {
+    pub(crate) pane: PaneId,
+    pub(crate) generation: u64,
+    pub(crate) token_start: usize,
+    pub(crate) token_end: usize,
+    pub(crate) matches: Vec<String>,
+}
+
+/// Popup chọn file/thư mục được kích hoạt bởi `@`.
+pub(crate) struct Mention {
+    pub(crate) token_start: usize,
+    pub(crate) token_end: usize,
+    pub(crate) matches: Vec<String>,
+    pub(crate) selected: usize,
+    pub(crate) offset: usize,
 }
 
 /// Một tab: cây layout + pane đang focus riêng.
@@ -178,6 +198,9 @@ pub(crate) struct App {
     pub(crate) confirm: Option<ConfirmDialog>,
     pub(crate) rename: Option<RenameState>,
     pub(crate) palette: Option<Palette>,
+    pub(crate) mention: Option<Mention>,
+    pub(crate) mention_rect: Option<Rect>,
+    pub(crate) mention_generation: u64,
     pub(crate) suggest: Option<Suggest>,
     pub(crate) suggest_rect: Option<Rect>,
     /// Giá trị buffer mà popup đã bị đóng chủ động (accept/Esc) → không tự mở lại

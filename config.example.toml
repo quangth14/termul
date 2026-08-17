@@ -21,6 +21,10 @@ tab_min_width = 6
 suggest_max_visible = 10
 suggest_fetch = 50
 
+[mention]
+# Pattern kiểu .gitignore, tính tương đối từ cwd của pane.
+exclude = ["target/", "*.log", "secrets/**"]
+
 [keys]
 # Modifier combos: "ctrl+b", "alt+x", "shift+enter", or a bare key like "enter".
 prefix = "ctrl+b"          # enter prefix mode
