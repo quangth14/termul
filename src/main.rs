@@ -107,7 +107,7 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
         panes: HashMap::from([(
             first_id,
             Pane {
-                grid: TermGrid::new(init_rows, init_cols),
+                grid: TermGrid::new(init_rows, init_cols, cfg.scrollback_limit_bytes),
                 pty,
                 osc: OscScanner::default(),
                 cwd: initial_cwd,
@@ -190,7 +190,7 @@ mod tests {
     use ratatui::widgets::Block;
 
     use crate::app::*;
-    use crate::config::Config;
+    use crate::config::{Config, DEFAULT_SCROLLBACK_LIMIT_BYTES};
     use crate::confirm::{confirm_option_at, confirm_rect};
     use crate::history::HistoryStore;
     use crate::input::{encode_key, handle_mouse};
@@ -212,7 +212,7 @@ mod tests {
             panes: HashMap::from([(
                 pid,
                 Pane {
-                    grid: TermGrid::new(24, 80),
+                    grid: TermGrid::new(24, 80, DEFAULT_SCROLLBACK_LIMIT_BYTES),
                     pty,
                     osc: OscScanner::default(),
                     cwd: String::new(),
@@ -427,7 +427,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         pty.write(b"echo RESULT=$((6*7))\n");
 
-        let mut grid = TermGrid::new(24, 80);
+        let mut grid = TermGrid::new(24, 80, DEFAULT_SCROLLBACK_LIMIT_BYTES);
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if grid.screen().contents().contains("RESULT=42") {
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn ghostty_encodes_mouse_sgr_offsets_into_pane() {
         let inner = Rect::new(1, 1, 80, 24);
-        let mut grid = TermGrid::new(inner.height, inner.width);
+        let mut grid = TermGrid::new(inner.height, inner.width, DEFAULT_SCROLLBACK_LIMIT_BYTES);
         grid.process(b"\x1b[?1000h\x1b[?1006h");
         let me = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),

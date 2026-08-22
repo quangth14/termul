@@ -12,8 +12,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
-const MAX_SCROLLBACK_LINES: usize = 100_000;
-
 /// Toạ độ một ô trong viewport terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GridPoint {
@@ -101,13 +99,13 @@ pub struct TerminalQueries {
 }
 
 impl TermGrid {
-    pub fn new(rows: u16, cols: u16) -> Self {
+    pub fn new(rows: u16, cols: u16, scrollback_limit_bytes: usize) -> Self {
         let rows = rows.max(1);
         let cols = cols.max(1);
         let terminal = Terminal::new(TerminalOptions {
             cols,
             rows,
-            max_scrollback: MAX_SCROLLBACK_LINES,
+            max_scrollback: scrollback_limit_bytes,
         })
         .expect("không thể tạo libghostty-vt terminal");
         let mut grid = Self {
@@ -146,10 +144,15 @@ impl TermGrid {
         if rows == 0 || cols == 0 || self.screen.size() == (rows, cols) {
             return;
         }
+        let offset_from_bottom = self.scrollback();
         self.terminal
             .resize(cols, rows, 1, 1)
             .expect("libghostty-vt resize thất bại");
-        self.refresh();
+        if offset_from_bottom == 0 {
+            self.refresh();
+        } else {
+            self.set_scrollback(offset_from_bottom);
+        }
     }
 
     pub fn screen(&self) -> &TermScreen {
@@ -503,10 +506,12 @@ impl Widget for TermView<'_> {
 mod tests {
     use super::*;
 
+    const TEST_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
+
     #[test]
     fn renders_truecolor_and_dim_attributes() {
         let area = Rect::new(0, 0, 8, 1);
-        let mut grid = TermGrid::new(1, 8);
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
         grid.process(b"\x1b[2;38;2;12;34;56mX");
         let mut buf = Buffer::empty(area);
         TermView {
@@ -542,7 +547,7 @@ mod tests {
     #[test]
     fn selection_blends_gray_over_rendered_background() {
         let area = Rect::new(0, 0, 2, 1);
-        let mut grid = TermGrid::new(1, 2);
+        let mut grid = TermGrid::new(1, 2, TEST_SCROLLBACK_LIMIT_BYTES);
         grid.process(b"\x1b[38;2;12;34;56;48;2;60;70;80mXY");
         let mut buf = Buffer::empty(area);
         TermView {
@@ -564,7 +569,7 @@ mod tests {
     #[test]
     fn selection_blends_gray_over_default_terminal_background() {
         let area = Rect::new(0, 0, 1, 1);
-        let mut grid = TermGrid::new(1, 1);
+        let mut grid = TermGrid::new(1, 1, TEST_SCROLLBACK_LIMIT_BYTES);
         grid.process(b"X");
         let mut buf = Buffer::empty(area);
         TermView {
@@ -579,7 +584,7 @@ mod tests {
 
     #[test]
     fn selected_text_handles_reverse_drag_rows_and_wide_cells() {
-        let mut grid = TermGrid::new(2, 8);
+        let mut grid = TermGrid::new(2, 8, TEST_SCROLLBACK_LIMIT_BYTES);
         grid.process("ab中 d\r\nef".as_bytes());
         let selection = GridSelection {
             anchor: GridPoint { row: 1, col: 1 },
@@ -591,7 +596,7 @@ mod tests {
 
     #[test]
     fn detects_split_palette_queries_and_formats_reply() {
-        let mut grid = TermGrid::new(1, 8);
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
         let first = grid.process(b"\x1b]1");
         assert!(!first.background);
         let second = grid.process(b"1;?\x1b\\");
@@ -604,7 +609,7 @@ mod tests {
 
     #[test]
     fn detects_batched_startup_capability_queries() {
-        let mut grid = TermGrid::new(24, 80);
+        let mut grid = TermGrid::new(24, 80, TEST_SCROLLBACK_LIMIT_BYTES);
         let queries = grid.process(b"\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c");
         assert!(queries.cursor_position);
         assert!(queries.foreground);
@@ -616,7 +621,7 @@ mod tests {
 
     #[test]
     fn ghostty_viewport_scrolls_and_returns_to_bottom() {
-        let mut grid = TermGrid::new(3, 20);
+        let mut grid = TermGrid::new(3, 20, TEST_SCROLLBACK_LIMIT_BYTES);
         grid.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
         grid.scroll_lines(-2);
         assert!(grid.scrollback() > 0);
@@ -624,5 +629,67 @@ mod tests {
         grid.set_scrollback(0);
         assert_eq!(grid.scrollback(), 0);
         assert!(grid.screen().contents().contains("five"));
+    }
+
+    #[test]
+    fn larger_byte_limit_retains_more_scrollback() {
+        let mut output = String::new();
+        for i in 0..1_500 {
+            output.push_str(&format!("{i:04} {}\r\n", "x".repeat(70)));
+        }
+
+        let mut small = TermGrid::new(3, 80, 100_000);
+        let mut large = TermGrid::new(3, 80, 10_000_000);
+        small.process(output.as_bytes());
+        large.process(output.as_bytes());
+        small.set_scrollback(usize::MAX);
+        large.set_scrollback(usize::MAX);
+
+        assert!(large.scrollback() > small.scrollback());
+    }
+
+    #[test]
+    fn resize_at_bottom_keeps_following_live_output() {
+        let mut grid = TermGrid::new(3, 10, TEST_SCROLLBACK_LIMIT_BYTES);
+        grid.process(b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
+
+        grid.resize(4, 12);
+        assert_eq!(grid.scrollback(), 0);
+        grid.process(b"\r\n000005");
+
+        assert_eq!(grid.scrollback(), 0);
+        assert!(grid.screen().contents().contains("000005"));
+    }
+
+    #[test]
+    fn resize_preserves_scrolled_offset_after_reflow() {
+        let mut grid = TermGrid::new(4, 12, TEST_SCROLLBACK_LIMIT_BYTES);
+        let output = (0..40)
+            .map(|i| format!("{i:02}-abcdefghijklmnop\r\n"))
+            .collect::<String>();
+        grid.process(output.as_bytes());
+        grid.set_scrollback(20);
+
+        for (rows, cols) in [(4, 10), (4, 7), (6, 18), (3, 9), (5, 12)] {
+            let before = grid.scrollback();
+            grid.resize(rows, cols);
+            assert_eq!(grid.scrollback(), before);
+            assert!(!grid.screen().contents().trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn resize_clamps_offset_when_scrollback_disappears() {
+        let mut grid = TermGrid::new(3, 5, TEST_SCROLLBACK_LIMIT_BYTES);
+        grid.process(b"abcdefghijklmnopqrstuvwxyz0123456789");
+        grid.set_scrollback(usize::MAX);
+        assert!(grid.scrollback() > 0);
+
+        grid.resize(3, 80);
+        assert_eq!(grid.scrollback(), 0);
+        grid.process(b"\r\nnext");
+
+        assert_eq!(grid.scrollback(), 0);
+        assert!(grid.screen().contents().contains("next"));
     }
 }

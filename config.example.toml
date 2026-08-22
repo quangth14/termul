@@ -25,6 +25,10 @@ suggest_fetch = 50
 # Pattern kiểu .gitignore, tính tương đối từ cwd của pane.
 exclude = ["target/", "*.log", "secrets/**"]
 
+[advanced]
+# Dung lượng scrollback tối đa theo byte cho mỗi pane. Đặt 0 để tắt scrollback.
+scrollback_limit_bytes = 10000000
+
 [keys]
 # Modifier combos: "ctrl+b", "alt+x", "shift+enter", or a bare key like "enter".
 prefix = "ctrl+b"          # enter prefix mode

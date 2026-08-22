@@ -122,7 +122,7 @@ pub(crate) fn spawn_pane(app: &mut App) -> Option<PaneId> {
     app.panes.insert(
         id,
         Pane {
-            grid: TermGrid::new(24, 80),
+            grid: TermGrid::new(24, 80, app.cfg.scrollback_limit_bytes),
             pty,
             osc: OscScanner::default(),
             cwd,

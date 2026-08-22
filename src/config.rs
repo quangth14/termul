@@ -9,6 +9,8 @@ use serde::Deserialize;
 
 use crate::app::{SUGGEST_FETCH, SUGGEST_MAX_VISIBLE, TAB_MIN_W};
 
+pub(crate) const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
+
 /// Một tổ hợp phím đã phân giải: (modifier, phím).
 pub(crate) type KeyBind = (KeyModifiers, KeyCode);
 
@@ -41,6 +43,7 @@ pub(crate) struct Config {
     pub(crate) suggest_max_visible: usize,
     pub(crate) suggest_fetch: usize,
     pub(crate) mention_exclude: Vec<String>,
+    pub(crate) scrollback_limit_bytes: usize,
     pub(crate) keys: Keymap,
 }
 
@@ -57,6 +60,7 @@ impl Default for Config {
             suggest_max_visible: SUGGEST_MAX_VISIBLE,
             suggest_fetch: SUGGEST_FETCH,
             mention_exclude: Vec::new(),
+            scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
             keys: Keymap {
                 prefix: (KeyModifiers::CONTROL, KeyCode::Char('b')),
                 quit: (KeyModifiers::CONTROL, KeyCode::Char('q')),
@@ -104,6 +108,7 @@ struct FileConfig {
     appearance: FileAppearance,
     behavior: FileBehavior,
     mention: FileMention,
+    advanced: FileAdvanced,
     keys: FileKeys,
 }
 
@@ -134,6 +139,12 @@ struct FileMention {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
+struct FileAdvanced {
+    scrollback_limit_bytes: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
 struct FileKeys {
     prefix: Option<String>,
     quit: Option<String>,
@@ -156,6 +167,7 @@ impl FileConfig {
         let a = self.appearance;
         let b = self.behavior;
         let m = self.mention;
+        let advanced = self.advanced;
         let k = self.keys;
         Config {
             bg: a.bg.and_then(|s| parse_color(&s)).unwrap_or(d.bg),
@@ -168,6 +180,9 @@ impl FileConfig {
             suggest_max_visible: b.suggest_max_visible.unwrap_or(d.suggest_max_visible),
             suggest_fetch: b.suggest_fetch.unwrap_or(d.suggest_fetch),
             mention_exclude: m.exclude,
+            scrollback_limit_bytes: advanced
+                .scrollback_limit_bytes
+                .unwrap_or(d.scrollback_limit_bytes),
             keys: Keymap {
                 prefix: k.prefix.and_then(|s| parse_bind(&s)).unwrap_or(d.keys.prefix),
                 quit: k.quit.and_then(|s| parse_bind(&s)).unwrap_or(d.keys.quit),
@@ -279,6 +294,8 @@ mod tests {
             suggest_max_visible = 5
             [mention]
             exclude = ["target/", "*.log"]
+            [advanced]
+            scrollback_limit_bytes = 20000000
             [keys]
             prefix = "ctrl+a"
         "##;
@@ -288,11 +305,20 @@ mod tests {
         assert_eq!(cfg.green, Color::Rgb(0, 255, 0));
         assert_eq!(cfg.suggest_max_visible, 5);
         assert_eq!(cfg.mention_exclude, ["target/", "*.log"]);
+        assert_eq!(cfg.scrollback_limit_bytes, 20_000_000);
         assert_eq!(cfg.keys.prefix, (KeyModifiers::CONTROL, KeyCode::Char('a')));
         // trường không khai báo → giữ mặc định
         assert_eq!(cfg.blue, Color::Rgb(137, 180, 250));
         assert_eq!(cfg.bg, Color::Rgb(40, 42, 54));
         assert_eq!(cfg.suggest_fetch, SUGGEST_FETCH);
         assert_eq!(cfg.keys.close_pane, 'x');
+    }
+
+    #[test]
+    fn scrollback_limit_defaults_to_ten_megabytes() {
+        assert_eq!(
+            Config::default().scrollback_limit_bytes,
+            DEFAULT_SCROLLBACK_LIMIT_BYTES
+        );
     }
 }
