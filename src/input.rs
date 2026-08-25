@@ -23,6 +23,14 @@ use crate::term::GridPoint;
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if key.kind == KeyEventKind::Release {
+        // Legacy không sinh bytes; Kitty REPORT_EVENTS cần release để app trong
+        // pane giữ đúng trạng thái phím nhưng release không được kích hoạt modal.
+        let focus = active_focus(app);
+        if let Some(pane) = app.panes.get_mut(&focus)
+            && let Some(bytes) = pane.grid.encode_key(key)
+        {
+            pane.pty.write(&bytes);
+        }
         return;
     }
     // Modal ưu tiên: palette > rename > confirm > menu.
@@ -133,8 +141,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
     }
     let focus = active_focus(app);
-    if let Some(bytes) = encode_key(key)
-        && let Some(pane) = app.panes.get_mut(&focus)
+    if let Some(pane) = app.panes.get_mut(&focus)
+        && let Some(bytes) = pane.grid.encode_key(key)
     {
         // Gõ phím → nhảy về đáy để thấy input/output mới nhất.
         pane.grid.set_scrollback(0);
@@ -564,90 +572,6 @@ pub(crate) fn forward_mouse(app: &mut App, pid: PaneId, me: MouseEvent) {
     {
         pane.pty.write(&bytes);
     }
-}
-
-// ── Mã hoá phím & chuột ─────────────────────────────────────────────
-
-/// Mã hoá phím thành bytes ANSI để ghi vào PTY.
-pub(crate) fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let mut out: Vec<u8> = Vec::new();
-
-    match key.code {
-        KeyCode::Char(c) => {
-            if ctrl {
-                let b = match c.to_ascii_lowercase() {
-                    ' ' | '@' => 0,
-                    c @ 'a'..='z' => (c as u8) - b'a' + 1,
-                    '[' => 27,
-                    '\\' => 28,
-                    ']' => 29,
-                    '^' => 30,
-                    '_' => 31,
-                    _ => return None,
-                };
-                if alt {
-                    out.push(0x1b);
-                }
-                out.push(b);
-            } else {
-                if alt {
-                    out.push(0x1b);
-                }
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-            }
-        }
-        KeyCode::Enter => {
-            if alt {
-                out.push(0x1b);
-            }
-            out.push(b'\r');
-        }
-        KeyCode::Backspace => {
-            if alt {
-                out.push(0x1b);
-            }
-            out.push(0x7f);
-        }
-        KeyCode::Tab => {
-            if alt {
-                out.push(0x1b);
-            }
-            out.push(b'\t');
-        }
-        KeyCode::BackTab => out.extend_from_slice(b"\x1b[Z"),
-        KeyCode::Esc => out.push(0x1b),
-        KeyCode::Left => out.extend_from_slice(b"\x1b[D"),
-        KeyCode::Right => out.extend_from_slice(b"\x1b[C"),
-        KeyCode::Up => out.extend_from_slice(b"\x1b[A"),
-        KeyCode::Down => out.extend_from_slice(b"\x1b[B"),
-        KeyCode::Home => out.extend_from_slice(b"\x1b[H"),
-        KeyCode::End => out.extend_from_slice(b"\x1b[F"),
-        KeyCode::PageUp => out.extend_from_slice(b"\x1b[5~"),
-        KeyCode::PageDown => out.extend_from_slice(b"\x1b[6~"),
-        KeyCode::Delete => out.extend_from_slice(b"\x1b[3~"),
-        KeyCode::Insert => out.extend_from_slice(b"\x1b[2~"),
-        KeyCode::F(n) => match n {
-            1 => out.extend_from_slice(b"\x1bOP"),
-            2 => out.extend_from_slice(b"\x1bOQ"),
-            3 => out.extend_from_slice(b"\x1bOR"),
-            4 => out.extend_from_slice(b"\x1bOS"),
-            5 => out.extend_from_slice(b"\x1b[15~"),
-            6 => out.extend_from_slice(b"\x1b[17~"),
-            7 => out.extend_from_slice(b"\x1b[18~"),
-            8 => out.extend_from_slice(b"\x1b[19~"),
-            9 => out.extend_from_slice(b"\x1b[20~"),
-            10 => out.extend_from_slice(b"\x1b[21~"),
-            11 => out.extend_from_slice(b"\x1b[23~"),
-            12 => out.extend_from_slice(b"\x1b[24~"),
-            _ => return None,
-        },
-        _ => return None,
-    }
-
-    if out.is_empty() { None } else { Some(out) }
 }
 
 #[cfg(test)]

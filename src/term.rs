@@ -1,12 +1,14 @@
 //! Backend terminal dựa trên `libghostty-vt`, cùng hướng triển khai với Herdr.
 
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::{CellWide, Screen};
 use libghostty_vt::style::{RgbColor, Underline};
 use libghostty_vt::terminal::{Mode, ScrollViewport};
 use libghostty_vt::{Terminal, TerminalOptions};
 use libghostty_vt::{key, mouse};
-use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -50,6 +52,8 @@ pub struct TermGrid {
     render_state: RenderState<'static>,
     row_iterator: RowIterator<'static>,
     cell_iterator: CellIterator<'static>,
+    key_encoder: key::Encoder<'static>,
+    key_event: key::Event<'static>,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
     screen: TermScreen,
@@ -113,6 +117,8 @@ impl TermGrid {
             render_state: RenderState::new().expect("không thể tạo Ghostty render state"),
             row_iterator: RowIterator::new().expect("không thể tạo Ghostty row iterator"),
             cell_iterator: CellIterator::new().expect("không thể tạo Ghostty cell iterator"),
+            key_encoder: key::Encoder::new().expect("không thể tạo Ghostty key encoder"),
+            key_event: key::Event::new().expect("không thể tạo Ghostty key event"),
             mouse_encoder: mouse::Encoder::new().expect("không thể tạo Ghostty mouse encoder"),
             mouse_event: mouse::Event::new().expect("không thể tạo Ghostty mouse event"),
             screen: TermScreen::empty(rows, cols),
@@ -198,6 +204,47 @@ impl TermGrid {
     /// Ứng dụng trong pane có yêu cầu bọc nội dung paste bằng DEC mode 2004 hay không.
     pub fn has_bracketed_paste(&self) -> bool {
         self.terminal.mode(Mode::BRACKETED_PASTE).unwrap_or(false)
+    }
+
+    /// Mã hoá phím theo keyboard protocol hiện hành của ứng dụng trong pane.
+    /// Ghostty tự áp dụng legacy, modifyOtherKeys hoặc Kitty keyboard protocol.
+    pub fn encode_key(&mut self, event: KeyEvent) -> Option<Vec<u8>> {
+        let (key, text, unshifted) = convert_key_code(event.code)?;
+        let action = match event.kind {
+            KeyEventKind::Press => key::Action::Press,
+            KeyEventKind::Repeat => key::Action::Repeat,
+            KeyEventKind::Release => key::Action::Release,
+        };
+        let mut mods = convert_key_modifiers(event.modifiers);
+        if matches!(event.code, KeyCode::BackTab) {
+            mods.insert(key::Mods::SHIFT);
+        }
+
+        self.key_event
+            .set_action(action)
+            .set_key(key)
+            .set_mods(mods)
+            .set_consumed_mods(key::Mods::empty())
+            .set_utf8(text);
+        if let Some(codepoint) = unshifted {
+            self.key_event.set_unshifted_codepoint(codepoint);
+        }
+
+        let mut bytes = Vec::with_capacity(16);
+        self.key_encoder
+            .set_options_from_terminal(&self.terminal)
+            .encode_to_vec(&self.key_event, &mut bytes)
+            .ok()?;
+        (!bytes.is_empty()).then_some(bytes)
+    }
+
+    /// Câu trả lời cho truy vấn Kitty keyboard protocol `CSI ? u`.
+    pub fn keyboard_flags_reply(&self) -> Vec<u8> {
+        let flags = self
+            .terminal
+            .kitty_keyboard_flags()
+            .unwrap_or(key::KittyKeyFlags::DISABLED);
+        format!("\x1b[?{}u", flags.bits()).into_bytes()
     }
 
     /// Mã hoá mouse event theo đúng tracking mode/format mà app đã bật.
@@ -334,6 +381,126 @@ impl TermGrid {
             hide_cursor,
             contents,
         };
+    }
+}
+
+fn convert_key_modifiers(modifiers: KeyModifiers) -> key::Mods {
+    let mut mods = key::Mods::empty();
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        mods.insert(key::Mods::SHIFT);
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        mods.insert(key::Mods::ALT);
+    }
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        mods.insert(key::Mods::CTRL);
+    }
+    if modifiers.contains(KeyModifiers::SUPER) {
+        mods.insert(key::Mods::SUPER);
+    }
+    mods
+}
+
+fn convert_key_code(code: KeyCode) -> Option<(key::Key, Option<String>, Option<char>)> {
+    let plain = |key| Some((key, None, None));
+    match code {
+        KeyCode::Backspace => plain(key::Key::Backspace),
+        KeyCode::Enter => plain(key::Key::Enter),
+        KeyCode::Left => plain(key::Key::ArrowLeft),
+        KeyCode::Right => plain(key::Key::ArrowRight),
+        KeyCode::Up => plain(key::Key::ArrowUp),
+        KeyCode::Down => plain(key::Key::ArrowDown),
+        KeyCode::Home => plain(key::Key::Home),
+        KeyCode::End => plain(key::Key::End),
+        KeyCode::PageUp => plain(key::Key::PageUp),
+        KeyCode::PageDown => plain(key::Key::PageDown),
+        KeyCode::Tab | KeyCode::BackTab => plain(key::Key::Tab),
+        KeyCode::Delete => plain(key::Key::Delete),
+        KeyCode::Insert => plain(key::Key::Insert),
+        KeyCode::Esc => plain(key::Key::Escape),
+        KeyCode::F(n @ 1..=12) => plain([
+            key::Key::F1,
+            key::Key::F2,
+            key::Key::F3,
+            key::Key::F4,
+            key::Key::F5,
+            key::Key::F6,
+            key::Key::F7,
+            key::Key::F8,
+            key::Key::F9,
+            key::Key::F10,
+            key::Key::F11,
+            key::Key::F12,
+        ][usize::from(n - 1)]),
+        KeyCode::Char(c) => {
+            let (key, unshifted) = convert_char_key(c);
+            Some((key, Some(c.to_string()), Some(unshifted)))
+        }
+        _ => None,
+    }
+}
+
+fn convert_char_key(c: char) -> (key::Key, char) {
+    let lower = c.to_ascii_lowercase();
+    let letter = match lower {
+        'a'..='z' => Some([
+            key::Key::A,
+            key::Key::B,
+            key::Key::C,
+            key::Key::D,
+            key::Key::E,
+            key::Key::F,
+            key::Key::G,
+            key::Key::H,
+            key::Key::I,
+            key::Key::J,
+            key::Key::K,
+            key::Key::L,
+            key::Key::M,
+            key::Key::N,
+            key::Key::O,
+            key::Key::P,
+            key::Key::Q,
+            key::Key::R,
+            key::Key::S,
+            key::Key::T,
+            key::Key::U,
+            key::Key::V,
+            key::Key::W,
+            key::Key::X,
+            key::Key::Y,
+            key::Key::Z,
+        ][lower as usize - 'a' as usize]),
+        _ => None,
+    };
+    if let Some(key) = letter {
+        return (key, lower);
+    }
+
+    match c {
+        '0' | ')' => (key::Key::Digit0, '0'),
+        '1' | '!' => (key::Key::Digit1, '1'),
+        '2' | '@' => (key::Key::Digit2, '2'),
+        '3' | '#' => (key::Key::Digit3, '3'),
+        '4' | '$' => (key::Key::Digit4, '4'),
+        '5' | '%' => (key::Key::Digit5, '5'),
+        '6' | '^' => (key::Key::Digit6, '6'),
+        '7' | '&' => (key::Key::Digit7, '7'),
+        '8' | '*' => (key::Key::Digit8, '8'),
+        '9' | '(' => (key::Key::Digit9, '9'),
+        ' ' => (key::Key::Space, ' '),
+        '`' | '~' => (key::Key::Backquote, '`'),
+        '\\' | '|' => (key::Key::Backslash, '\\'),
+        '[' | '{' => (key::Key::BracketLeft, '['),
+        ']' | '}' => (key::Key::BracketRight, ']'),
+        ',' | '<' => (key::Key::Comma, ','),
+        '=' | '+' => (key::Key::Equal, '='),
+        '-' | '_' => (key::Key::Minus, '-'),
+        '.' | '>' => (key::Key::Period, '.'),
+        '\'' | '"' => (key::Key::Quote, '\''),
+        ';' | ':' => (key::Key::Semicolon, ';'),
+        '/' | '?' => (key::Key::Slash, '/'),
+        _ => (key::Key::Unidentified, c),
     }
 }
 
@@ -597,6 +764,46 @@ mod tests {
         };
 
         assert_eq!(grid.screen().selected_text(selection), "b中 d\nef");
+    }
+
+    #[test]
+    fn encodes_shift_enter_with_live_keyboard_protocol() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+
+        grid.process(b"\x1b[>7u\x1b[?u");
+        assert_eq!(grid.keyboard_flags_reply(), b"\x1b[?7u");
+        assert_eq!(grid.encode_key(shift_enter), Some(b"\x1b[13;2u".to_vec()));
+    }
+
+    #[test]
+    fn kitty_protocol_encodes_modifiers_and_key_releases() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        grid.process(b"\x1b[>7u");
+
+        assert_eq!(
+            grid.encode_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL)),
+            Some(b"\x1b[9;5u".to_vec())
+        );
+        assert!(
+            grid.encode_key(KeyEvent::new_with_kind(
+                KeyCode::Up,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            ))
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn encodes_shift_enter_with_modify_other_keys_fallback() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        grid.process(b"\x1b[>4;2m");
+
+        assert_eq!(
+            grid.encode_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+            Some(b"\x1b[27;2;13~".to_vec())
+        );
     }
 
     #[test]

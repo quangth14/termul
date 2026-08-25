@@ -36,9 +36,12 @@ pub(crate) fn handle_event(app: &mut App, ev: AppEvent) {
                     pane.pty
                         .write(&cursor_position_reply(pane.grid.screen().cursor_position()));
                 }
-                // xterm-compatible primary DA. Đồng thời đây là fallback mà
-                // Codex dùng để kết luận keyboard enhancement không được hỗ trợ.
-                if queries.device_attributes || queries.keyboard_flags {
+                if queries.keyboard_flags {
+                    pane.pty.write(&pane.grid.keyboard_flags_reply());
+                }
+                // xterm-compatible primary DA, dùng làm sentinel kết thúc
+                // capability negotiation của Claude Code/Pi.
+                if queries.device_attributes {
                     pane.pty.write(b"\x1b[?1;2c");
                 }
                 pane.osc.scan(&bytes, &mut osc_events);

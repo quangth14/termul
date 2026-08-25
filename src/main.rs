@@ -30,6 +30,10 @@ use anyhow::Result;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
+#[cfg(not(windows))]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -58,11 +62,35 @@ fn main() -> Result<()> {
     result
 }
 
+#[cfg(not(windows))]
+fn push_keyboard_enhancement_flags() -> std::io::Result<()> {
+    let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
+    execute!(io::stdout(), PushKeyboardEnhancementFlags(flags))
+}
+
+#[cfg(windows)]
+fn push_keyboard_enhancement_flags() -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn pop_keyboard_enhancement_flags() -> std::io::Result<()> {
+    execute!(io::stdout(), PopKeyboardEnhancementFlags)
+}
+
+#[cfg(windows)]
+fn pop_keyboard_enhancement_flags() -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Khôi phục terminal khi panic để không để lại raw mode / alternate screen.
 fn install_panic_hook() {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
+        let _ = pop_keyboard_enhancement_flags();
         let _ = execute!(
             io::stdout(),
             LeaveAlternateScreen,
@@ -82,12 +110,14 @@ fn setup_terminal() -> Result<Terminal<Backend>> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
+    push_keyboard_enhancement_flags()?;
     let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     Ok(terminal)
 }
 
 fn restore_terminal(terminal: &mut Terminal<Backend>) -> Result<()> {
     disable_raw_mode()?;
+    pop_keyboard_enhancement_flags()?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
@@ -206,7 +236,7 @@ mod tests {
     use crate::config::{Config, DEFAULT_SCROLLBACK_LIMIT_BYTES};
     use crate::confirm::{confirm_option_at, confirm_rect};
     use crate::history::HistoryStore;
-    use crate::input::{encode_key, handle_mouse};
+    use crate::input::handle_mouse;
     use crate::layout::{Layout, PaneId};
     use crate::menu::{menu_item_at, popup_rect};
     use crate::osc::{OscEvent, OscScanner};
@@ -468,20 +498,21 @@ mod tests {
 
     #[test]
     fn encode_key_basic() {
+        let mut grid = TermGrid::new(24, 80, DEFAULT_SCROLLBACK_LIMIT_BYTES);
         assert_eq!(
-            encode_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            grid.encode_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(vec![b'\r'])
         );
         assert_eq!(
-            encode_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            grid.encode_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Some(vec![0x03])
         );
         assert_eq!(
-            encode_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            grid.encode_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
             Some(vec![b'a'])
         );
         assert_eq!(
-            encode_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+            grid.encode_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
             Some(b"\x1b[D".to_vec())
         );
     }
