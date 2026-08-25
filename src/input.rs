@@ -142,6 +142,42 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Xử lý một lần paste nguyên khối. Chỉ bọc marker khi ứng dụng trong pane
+/// đã bật DEC mode 2004; nếu không, gửi nội dung thô như terminal thông thường.
+pub(crate) fn handle_paste(app: &mut App, text: String) {
+    if let Some(pal) = &mut app.palette {
+        pal.query.push_str(&text);
+        palette_research(app);
+        return;
+    }
+    if let Some(rename) = &mut app.rename {
+        rename.buffer.push_str(&text);
+        return;
+    }
+    if app.confirm.is_some() || app.menu.is_some() {
+        return;
+    }
+
+    let focus = active_focus(app);
+    if let Some(pane) = app.panes.get_mut(&focus) {
+        pane.grid.set_scrollback(0);
+        let bytes = encode_paste(&text, pane.grid.has_bracketed_paste());
+        pane.pty.write(&bytes);
+    }
+}
+
+fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return text.as_bytes().to_vec();
+    }
+
+    let mut bytes = Vec::with_capacity(text.len() + 12);
+    bytes.extend_from_slice(b"\x1b[200~");
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.extend_from_slice(b"\x1b[201~");
+    bytes
+}
+
 fn is_selection_copy_key(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Char('c' | 'C'))
         && matches!(key.modifiers, KeyModifiers::CONTROL)
@@ -620,6 +656,15 @@ mod clipboard_tests {
 
     fn key(modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(KeyCode::Char('c'), modifiers)
+    }
+
+    #[test]
+    fn paste_payload_follows_inner_terminal_mode() {
+        assert_eq!(encode_paste("một\nhai", false), "một\nhai".as_bytes());
+        assert_eq!(
+            encode_paste("một\nhai", true),
+            b"\x1b[200~m\xe1\xbb\x99t\nhai\x1b[201~"
+        );
     }
 
     #[test]

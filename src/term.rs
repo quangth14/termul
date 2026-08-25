@@ -3,7 +3,7 @@
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::{CellWide, Screen};
 use libghostty_vt::style::{RgbColor, Underline};
-use libghostty_vt::terminal::ScrollViewport;
+use libghostty_vt::terminal::{Mode, ScrollViewport};
 use libghostty_vt::{Terminal, TerminalOptions};
 use libghostty_vt::{key, mouse};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -193,6 +193,11 @@ impl TermGrid {
 
     pub fn has_mouse_tracking(&self) -> bool {
         self.terminal.is_mouse_tracking().unwrap_or(false)
+    }
+
+    /// Ứng dụng trong pane có yêu cầu bọc nội dung paste bằng DEC mode 2004 hay không.
+    pub fn has_bracketed_paste(&self) -> bool {
+        self.terminal.mode(Mode::BRACKETED_PASTE).unwrap_or(false)
     }
 
     /// Mã hoá mouse event theo đúng tracking mode/format mà app đã bật.
@@ -592,6 +597,18 @@ mod tests {
         };
 
         assert_eq!(grid.screen().selected_text(selection), "b中 d\nef");
+    }
+
+    #[test]
+    fn tracks_bracketed_paste_mode() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        assert!(!grid.has_bracketed_paste());
+
+        grid.process(b"\x1b[?2004h");
+        assert!(grid.has_bracketed_paste());
+
+        grid.process(b"\x1b[?2004l");
+        assert!(!grid.has_bracketed_paste());
     }
 
     #[test]

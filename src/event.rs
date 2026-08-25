@@ -6,7 +6,7 @@ use crossterm::event::Event;
 use ratatui::style::Color;
 
 use crate::app::*;
-use crate::input::{handle_key, handle_mouse};
+use crate::input::{handle_key, handle_mouse, handle_paste};
 use crate::layout::PaneId;
 use crate::mention::rebuild_mention;
 use crate::osc::OscEvent;
@@ -55,6 +55,7 @@ pub(crate) fn handle_event(app: &mut App, ev: AppEvent) {
         }
         AppEvent::Term(Event::Key(key)) => handle_key(app, key),
         AppEvent::Term(Event::Mouse(me)) => handle_mouse(app, me),
+        AppEvent::Term(Event::Paste(text)) => handle_paste(app, text),
         AppEvent::Term(Event::Resize(_, _)) => {}
         AppEvent::Term(_) => {}
         AppEvent::MentionReady(result) => {
