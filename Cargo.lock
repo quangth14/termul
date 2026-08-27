@@ -1696,6 +1696,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "ignore",
+ "libc",
  "libghostty-vt",
  "nucleo-matcher",
  "portable-pty",

@@ -1,6 +1,11 @@
 //! Render: hàm `draw` vẽ toàn bộ khung hình (pane, tabbar, các overlay).
 
+use std::io::Write;
+
 use anyhow::Result;
+use crossterm::cursor::SetCursorStyle;
+use crossterm::execute;
+use crossterm::terminal::SetTitle;
 use ratatui::Terminal;
 use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -12,7 +17,7 @@ use crate::mention::compute_mention_rect;
 use crate::palette::render_palette;
 use crate::session::{active_focus, recompute};
 use crate::suggest::{compute_suggest_rect, suggest_visible};
-use crate::term::TermView;
+use crate::term::{CursorShape, TermView};
 
 pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()> {
     let size = terminal.size()?;
@@ -29,6 +34,42 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
     let red = app.cfg.red;
     let yellow = app.cfg.yellow;
     let max_visible = app.cfg.suggest_max_visible;
+    let cursor_color = if app.rename.is_none()
+        && app.menu.is_none()
+        && app.confirm.is_none()
+        && app.palette.is_none()
+    {
+        app.panes
+            .get(&focus)
+            .and_then(|pane| pane.grid.screen().cursor_color())
+            .filter(|color| Some(*color) != app.host_terminal_theme.cursor)
+    } else {
+        None
+    };
+    let terminal_title = app
+        .panes
+        .get(&focus)
+        .map(|pane| pane.title.as_str())
+        .filter(|title| !title.is_empty())
+        .unwrap_or("termul");
+    let cursor_style = if app.rename.is_none()
+        && app.menu.is_none()
+        && app.confirm.is_none()
+        && app.palette.is_none()
+    {
+        app.panes.get(&focus).map_or(SetCursorStyle::DefaultUserShape, |pane| {
+            match (pane.grid.screen().cursor_shape(), pane.grid.screen().cursor_blinking()) {
+                (CursorShape::Block, true) => SetCursorStyle::BlinkingBlock,
+                (CursorShape::Block, false) => SetCursorStyle::SteadyBlock,
+                (CursorShape::Underline, true) => SetCursorStyle::BlinkingUnderScore,
+                (CursorShape::Underline, false) => SetCursorStyle::SteadyUnderScore,
+                (CursorShape::Bar, true) => SetCursorStyle::BlinkingBar,
+                (CursorShape::Bar, false) => SetCursorStyle::SteadyBar,
+            }
+        })
+    } else {
+        SetCursorStyle::DefaultUserShape
+    };
 
     // Một pane duy nhất → không viền, pane chiếm trọn vùng.
     let single = app.areas.len() == 1;
@@ -270,6 +311,17 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             }
         }
     })?;
+    execute!(terminal.backend_mut(), cursor_style, SetTitle(terminal_title))?;
+    if let Some(color) = cursor_color {
+        write!(
+            terminal.backend_mut(),
+            "\x1b]12;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+            color.r, color.g, color.b
+        )?;
+    } else {
+        terminal.backend_mut().write_all(b"\x1b]112\x1b\\")?;
+    }
+    terminal.backend_mut().flush()?;
     Ok(())
 }
 

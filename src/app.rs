@@ -17,6 +17,7 @@ use crate::osc::OscScanner;
 use crate::pty::PtySession;
 use crate::shell::ShellIntegration;
 use crate::term::{GridPoint, GridSelection, TermGrid};
+use crate::terminal_theme::{CellPixelSize, HostTerminalTheme};
 
 /// Sự kiện hợp nhất đẩy vào event loop chính.
 pub(crate) enum AppEvent {
@@ -40,7 +41,7 @@ pub(crate) struct PendingCmd {
 }
 
 /// Dòng nhập hiện tại của pane (từ zle line-pre-redraw).
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub(crate) struct InputLine {
     pub(crate) buffer: String,
     pub(crate) cursor: usize, // vị trí con trỏ theo ký tự
@@ -52,8 +53,11 @@ pub(crate) struct Pane {
     pub(crate) pty: PtySession,
     pub(crate) osc: OscScanner,
     pub(crate) cwd: String,
+    pub(crate) title: String,
     pub(crate) pending: Option<PendingCmd>,
     pub(crate) input: InputLine,
+    /// Trạng thái cuối đang chờ trước khi cho phép vẽ lại input shell.
+    pub(crate) input_draw_target: Option<InputLine>,
 }
 
 /// Fuzzy history palette (mở bằng Ctrl+B r).
@@ -180,6 +184,8 @@ pub(crate) struct App {
     pub(crate) history: HistoryStore,
     pub(crate) integ: ShellIntegration,
     pub(crate) cfg: Config,
+    pub(crate) host_terminal_theme: HostTerminalTheme,
+    pub(crate) cell_pixel_size: CellPixelSize,
     pub(crate) next_pane: u64,
     pub(crate) next_split: u64,
     pub(crate) next_tab: u64,

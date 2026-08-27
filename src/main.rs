@@ -19,16 +19,19 @@ mod session;
 mod shell;
 mod suggest;
 mod term;
+mod terminal_theme;
 mod ui;
+mod xtgettcap;
 
 use std::collections::HashMap;
-use std::io::{self};
+use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture,
 };
 #[cfg(not(windows))]
 use crossterm::event::{
@@ -52,6 +55,7 @@ use crate::pty::PtySession;
 use crate::session::{grid_dims, inner_of};
 use crate::shell::ShellIntegration;
 use crate::term::TermGrid;
+use crate::terminal_theme::HostTerminalCapabilities;
 use crate::ui::draw;
 
 fn main() -> Result<()> {
@@ -95,8 +99,10 @@ fn install_panic_hook() {
             io::stdout(),
             LeaveAlternateScreen,
             DisableBracketedPaste,
+            DisableFocusChange,
             DisableMouseCapture
         );
+        let _ = io::stdout().write_all(b"\x1b]112\x1b\\");
         original(info);
     }));
 }
@@ -108,6 +114,7 @@ fn setup_terminal() -> Result<Terminal<Backend>> {
         stdout,
         EnterAlternateScreen,
         EnableMouseCapture,
+        EnableFocusChange,
         EnableBracketedPaste
     )?;
     push_keyboard_enhancement_flags()?;
@@ -122,8 +129,11 @@ fn restore_terminal(terminal: &mut Terminal<Backend>) -> Result<()> {
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableBracketedPaste,
+        DisableFocusChange,
         DisableMouseCapture
     )?;
+    terminal.backend_mut().write_all(b"\x1b]112\x1b\\")?;
+    terminal.backend_mut().flush()?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -139,6 +149,8 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
     let integ = ShellIntegration::setup()?;
     let history = HistoryStore::open_default()?;
     let cfg = Config::load();
+    let host_capabilities = HostTerminalCapabilities::query();
+    let host_terminal_theme = host_capabilities.theme;
 
     let first_id = PaneId(0);
     let initial_cwd = std::env::current_dir()?.to_string_lossy().into_owned();
@@ -150,12 +162,20 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
         panes: HashMap::from([(
             first_id,
             Pane {
-                grid: TermGrid::new(init_rows, init_cols, cfg.scrollback_limit_bytes),
+                grid: TermGrid::with_host_capabilities(
+                    init_rows,
+                    init_cols,
+                    cfg.scrollback_limit_bytes,
+                    host_terminal_theme,
+                    host_capabilities.cell_size,
+                ),
                 pty,
                 osc: OscScanner::default(),
                 cwd: initial_cwd,
+                title: String::new(),
                 pending: None,
                 input: InputLine::default(),
+                input_draw_target: None,
             },
         )]),
         tabs: vec![Tab {
@@ -169,6 +189,8 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
         history,
         integ,
         cfg,
+        host_terminal_theme,
+        cell_pixel_size: host_capabilities.cell_size,
         next_pane: 1,
         next_split: 0,
         next_tab: 2,
@@ -197,17 +219,28 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
     draw(terminal, &mut app)?;
 
     while let Ok(ev) = rx.recv() {
+        let mut force_draw = !matches!(&ev, AppEvent::PtyData(_, _));
         handle_event(&mut app, ev);
         while let Ok(ev) = rx.try_recv() {
+            force_draw |= !matches!(&ev, AppEvent::PtyData(_, _));
             handle_event(&mut app, ev);
         }
         if app.should_quit {
             break;
         }
-        draw(terminal, &mut app)?;
+        let focused_pane = app.panes.get(&app.tabs[app.active_tab].focus);
+        let defer_sync_output = focused_pane.is_some_and(|pane| pane.grid.synchronized_output());
+        let defer_input_animation = focused_pane.is_some_and(|pane| pane.input_draw_target.is_some());
+        if should_draw(force_draw, defer_sync_output, defer_input_animation) {
+            draw(terminal, &mut app)?;
+        }
     }
 
     Ok(())
+}
+
+fn should_draw(force_draw: bool, defer_sync_output: bool, defer_input_animation: bool) -> bool {
+    !defer_input_animation && (force_draw || !defer_sync_output)
 }
 
 fn spawn_input_thread(tx: Sender<AppEvent>) {
@@ -235,6 +268,7 @@ mod tests {
     use crate::app::*;
     use crate::config::{Config, DEFAULT_SCROLLBACK_LIMIT_BYTES};
     use crate::confirm::{confirm_option_at, confirm_rect};
+    use crate::event::handle_osc;
     use crate::history::HistoryStore;
     use crate::input::handle_mouse;
     use crate::layout::{Layout, PaneId};
@@ -245,6 +279,16 @@ mod tests {
     use crate::shell::ShellIntegration;
     use crate::suggest::{rebuild_suggest, suggest_accept};
     use crate::term::{GridPoint, TermGrid};
+    use crate::terminal_theme::HostTerminalTheme;
+    use crate::should_draw;
+
+    #[test]
+    fn input_animation_deferral_overrides_forced_draw() {
+        assert!(!should_draw(true, false, true));
+        assert!(should_draw(true, true, false));
+        assert!(should_draw(false, false, false));
+        assert!(!should_draw(false, true, false));
+    }
 
     /// Dựng một App tối thiểu với đúng 1 pane để test layout.
     fn one_pane_app() -> App {
@@ -259,8 +303,10 @@ mod tests {
                     pty,
                     osc: OscScanner::default(),
                     cwd: String::new(),
+                    title: String::new(),
                     pending: None,
                     input: InputLine::default(),
+                    input_draw_target: None,
                 },
             )]),
             tabs: vec![Tab {
@@ -274,6 +320,8 @@ mod tests {
             history: HistoryStore::open(":memory:".into()).unwrap(),
             integ: ShellIntegration::setup().unwrap(),
             cfg: Config::default(),
+            host_terminal_theme: HostTerminalTheme::default(),
+            cell_pixel_size: Default::default(),
             next_pane: 1,
             next_split: 0,
             next_tab: 2,
@@ -324,10 +372,24 @@ mod tests {
         suggest_accept(&mut app);
         assert!(app.suggest.is_none(), "accept phải đóng popup");
         let dismissed = app.suggest_dismissed_for.clone().expect("đã đặt dismissed");
+        let target = app.panes[&PaneId(0)]
+            .input_draw_target
+            .as_ref()
+            .expect("phải hoãn redraw tới trạng thái cuối");
+        assert_eq!(target.buffer, dismissed);
+        assert_eq!(target.cursor, dismissed.chars().count());
 
-        // Shell echo lại lệnh đầy đủ → buffer == dismissed → KHÔNG mở lại.
-        set_input(&mut app, &dismissed);
-        rebuild_suggest(&mut app);
+        // Shell báo đúng trạng thái cuối → bỏ hoãn redraw và không mở lại popup.
+        handle_osc(
+            &mut app,
+            PaneId(0),
+            OscEvent::BufferUpdate {
+                cursor: dismissed.chars().count(),
+                buffer: dismissed.clone(),
+                cwd: "/x".into(),
+            },
+        );
+        assert!(app.panes[&PaneId(0)].input_draw_target.is_none());
         assert!(app.suggest.is_none(), "không được tự mở lại cho lệnh vừa accept");
 
         // Gõ khác đi → dismissed hết hiệu lực → popup mở lại.

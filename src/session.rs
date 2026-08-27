@@ -51,8 +51,11 @@ pub(crate) fn recompute(app: &mut App, area: Rect) {
         inner_areas.insert(*pid, inner);
         let (cols, rows) = grid_dims(inner);
         if let Some(pane) = app.panes.get_mut(pid) {
-            pane.pty.resize(rows, cols);
-            pane.grid.resize(rows, cols);
+            pane.pty.resize(rows, cols, app.cell_pixel_size);
+            let effects = pane.grid.resize(rows, cols);
+            for response in effects.pty_responses {
+                pane.pty.write(&response);
+            }
         }
     }
 
@@ -122,12 +125,20 @@ pub(crate) fn spawn_pane(app: &mut App) -> Option<PaneId> {
     app.panes.insert(
         id,
         Pane {
-            grid: TermGrid::new(24, 80, app.cfg.scrollback_limit_bytes),
+            grid: TermGrid::with_host_capabilities(
+                24,
+                80,
+                app.cfg.scrollback_limit_bytes,
+                app.host_terminal_theme,
+                app.cell_pixel_size,
+            ),
             pty,
             osc: OscScanner::default(),
             cwd,
+            title: String::new(),
             pending: None,
             input: InputLine::default(),
+            input_draw_target: None,
         },
     );
     Some(id)

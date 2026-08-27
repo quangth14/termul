@@ -7,15 +7,16 @@ use std::thread;
 use anyhow::Result;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
-use crate::layout::PaneId;
 use crate::app::AppEvent;
+use crate::layout::PaneId;
+use crate::terminal_theme::CellPixelSize;
 
 /// Một phiên PTY: giữ master để ghi/resize, child process, và kích thước hiện tại.
 pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     _child: Box<dyn Child + Send + Sync>,
-    size: (u16, u16), // (rows, cols)
+    size: (u16, u16, u16, u16), // (rows, cols, pixel_width, pixel_height)
 }
 
 impl PtySession {
@@ -86,7 +87,7 @@ impl PtySession {
             master: pair.master,
             writer,
             _child: child,
-            size: (rows, cols),
+            size: (rows, cols, 0, 0),
         })
     }
 
@@ -97,15 +98,21 @@ impl PtySession {
     }
 
     /// Resize PTY khi vùng hiển thị đổi (gửi SIGWINCH tới shell).
-    pub fn resize(&mut self, rows: u16, cols: u16) {
-        if (rows, cols) != self.size && rows > 0 && cols > 0 {
+    pub fn resize(&mut self, rows: u16, cols: u16, cell_size: CellPixelSize) {
+        let pixel_width = u32::from(cols)
+            .saturating_mul(cell_size.width)
+            .min(u32::from(u16::MAX)) as u16;
+        let pixel_height = u32::from(rows)
+            .saturating_mul(cell_size.height)
+            .min(u32::from(u16::MAX)) as u16;
+        if (rows, cols, pixel_width, pixel_height) != self.size && rows > 0 && cols > 0 {
             let _ = self.master.resize(PtySize {
                 rows,
                 cols,
-                pixel_width: 0,
-                pixel_height: 0,
+                pixel_width,
+                pixel_height,
             });
-            self.size = (rows, cols);
+            self.size = (rows, cols, pixel_width, pixel_height);
         }
     }
 }

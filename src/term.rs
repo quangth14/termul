@@ -1,18 +1,28 @@
 //! Backend terminal dựa trên `libghostty-vt`, cùng hướng triển khai với Herdr.
 
+use std::sync::{Arc, Mutex};
+
 use crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
-use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
-use libghostty_vt::screen::{CellWide, Screen};
-use libghostty_vt::style::{RgbColor, Underline};
-use libghostty_vt::terminal::{Mode, ScrollViewport};
+use libghostty_vt::render::{CellIterator, CursorVisualStyle, RenderState, RowIterator};
+use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
+use libghostty_vt::style::{Palette, RgbColor, StyleColor, Underline};
+use libghostty_vt::terminal::{
+    ClipboardLocation, ColorScheme, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes,
+    DeviceType, Mode,
+    PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, TertiaryDeviceAttributes,
+};
 use libghostty_vt::{Terminal, TerminalOptions};
 use libghostty_vt::{key, mouse};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
+
+use crate::terminal_theme::{CellPixelSize, HostTerminalTheme};
+use crate::xtgettcap::XtgettcapTracker;
 
 /// Toạ độ một ô trong viewport terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,18 +67,41 @@ pub struct TermGrid {
     mouse_encoder: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
     screen: TermScreen,
-    query_tail: Vec<u8>,
+    host_theme: HostTerminalTheme,
+    cell_size: CellPixelSize,
+    size_report: Arc<Mutex<libghostty_vt::terminal::SizeReportSize>>,
+    pending_effects: Arc<Mutex<TerminalEffects>>,
+    xtgettcap: XtgettcapTracker,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TermColor {
+    Indexed(u8),
+    Rgb(RgbColor),
+}
+
+impl TermColor {
+    fn ratatui(self) -> Color {
+        match self {
+            Self::Indexed(index) => Color::Indexed(index),
+            Self::Rgb(color) => Color::Rgb(color.r, color.g, color.b),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
 struct TermCell {
     contents: String,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<TermColor>,
+    bg: Option<TermColor>,
     bold: bool,
     faint: bool,
     italic: bool,
     underline: bool,
+    underline_color: Option<TermColor>,
+    blink: bool,
+    invisible: bool,
+    strikethrough: bool,
     inverse: bool,
     wide: CellWideKind,
 }
@@ -82,36 +115,202 @@ enum CellWideKind {
 }
 
 /// Snapshot nhẹ của viewport Ghostty để UI chỉ cần mượn bất biến khi render.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Underline,
+    Bar,
+}
+
 pub struct TermScreen {
     rows: u16,
     cols: u16,
     cells: Vec<TermCell>,
     cursor: (u16, u16),
     hide_cursor: bool,
+    cursor_shape: CursorShape,
+    cursor_blinking: bool,
+    cursor_color: Option<RgbColor>,
+    default_fg: Color,
+    default_bg: Color,
     #[cfg_attr(not(test), allow(dead_code))]
     contents: String,
 }
 
-/// Các truy vấn capability mà app khách gửi lúc khởi động.
+/// Hiệu ứng terminal cần adapter ngoài thực thi sau khi Ghostty xử lý PTY output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardTarget {
+    Standard,
+    Primary,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClipboardWriteRequest {
+    pub target: ClipboardTarget,
+    pub data: Vec<u8>,
+}
+
 #[derive(Default)]
-pub struct TerminalQueries {
-    pub foreground: bool,
-    pub background: bool,
-    pub cursor_position: bool,
-    pub device_attributes: bool,
-    pub keyboard_flags: bool,
+pub struct TerminalEffects {
+    pub pty_responses: Vec<Vec<u8>>,
+    pub bell_count: usize,
+    pub clipboard_writes: Vec<ClipboardWriteRequest>,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+}
+
+impl TerminalEffects {
+    fn append(&mut self, mut other: Self) {
+        self.pty_responses.append(&mut other.pty_responses);
+        self.bell_count += other.bell_count;
+        self.clipboard_writes.append(&mut other.clipboard_writes);
+        if other.title.is_some() {
+            self.title = other.title;
+        }
+        if other.cwd.is_some() {
+            self.cwd = other.cwd;
+        }
+    }
 }
 
 impl TermGrid {
+    #[cfg(test)]
     pub fn new(rows: u16, cols: u16, scrollback_limit_bytes: usize) -> Self {
+        Self::with_host_theme(
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            HostTerminalTheme::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn with_host_theme(
+        rows: u16,
+        cols: u16,
+        scrollback_limit_bytes: usize,
+        host_theme: HostTerminalTheme,
+    ) -> Self {
+        Self::with_host_capabilities(
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_theme,
+            CellPixelSize::default(),
+        )
+    }
+
+    pub fn with_host_capabilities(
+        rows: u16,
+        cols: u16,
+        scrollback_limit_bytes: usize,
+        host_theme: HostTerminalTheme,
+        cell_size: CellPixelSize,
+    ) -> Self {
         let rows = rows.max(1);
         let cols = cols.max(1);
-        let terminal = Terminal::new(TerminalOptions {
+        let pending_effects = Arc::new(Mutex::new(TerminalEffects::default()));
+        let size_report = Arc::new(Mutex::new(libghostty_vt::terminal::SizeReportSize {
+            rows,
+            columns: cols,
+            cell_width: cell_size.width,
+            cell_height: cell_size.height,
+        }));
+        let callback_effects = Arc::clone(&pending_effects);
+        let mut terminal = Terminal::new(TerminalOptions {
             cols,
             rows,
             max_scrollback: scrollback_limit_bytes,
         })
         .expect("không thể tạo libghostty-vt terminal");
+        terminal
+            .on_pty_write(move |_terminal, bytes| {
+                if let Ok(mut effects) = callback_effects.lock() {
+                    effects.pty_responses.push(bytes.to_vec());
+                }
+            })
+            .expect("không thể đăng ký callback phản hồi PTY");
+        let callback_effects = Arc::clone(&pending_effects);
+        terminal
+            .on_bell(move |_terminal| {
+                if let Ok(mut effects) = callback_effects.lock() {
+                    effects.bell_count += 1;
+                }
+            })
+            .expect("không thể đăng ký callback bell");
+        let callback_effects = Arc::clone(&pending_effects);
+        terminal
+            .on_title_changed(move |terminal| {
+                if let Ok(mut effects) = callback_effects.lock() {
+                    effects.title = terminal.title().ok().map(str::to_string);
+                }
+            })
+            .expect("không thể đăng ký callback title");
+        let callback_effects = Arc::clone(&pending_effects);
+        terminal
+            .on_pwd_changed(move |terminal| {
+                if let Ok(mut effects) = callback_effects.lock() {
+                    effects.cwd = terminal.pwd().ok().map(str::to_string);
+                }
+            })
+            .expect("không thể đăng ký callback cwd");
+        let callback_effects = Arc::clone(&pending_effects);
+        terminal
+            .on_clipboard_write(move |_terminal, write| {
+                if let Some(content) = write.contents().find(|content| {
+                    content.mime.is_empty() || content.mime == "text/plain"
+                }) && let Ok(mut effects) = callback_effects.lock()
+                {
+                    let target = match write.location() {
+                        ClipboardLocation::Standard => ClipboardTarget::Standard,
+                        ClipboardLocation::Selection | ClipboardLocation::Primary => {
+                            ClipboardTarget::Primary
+                        }
+                    };
+                    effects.clipboard_writes.push(ClipboardWriteRequest {
+                        target,
+                        data: content.data.as_bytes().to_vec(),
+                    });
+                }
+                Ok(())
+            })
+            .expect("không thể đăng ký callback clipboard");
+        terminal
+            .on_xtversion(|_terminal| Some(concat!("termul ", env!("CARGO_PKG_VERSION"))))
+            .expect("không thể đăng ký callback XTVERSION");
+        let callback_size = Arc::clone(&size_report);
+        terminal
+            .on_size(move |_terminal| callback_size.lock().ok().map(|size| *size))
+            .expect("không thể đăng ký callback size report");
+        let color_scheme = host_theme.background.map(|color| {
+            let luminance =
+                u32::from(color.r) * 299 + u32::from(color.g) * 587 + u32::from(color.b) * 114;
+            if luminance >= 128_000 {
+                ColorScheme::Light
+            } else {
+                ColorScheme::Dark
+            }
+        });
+        terminal
+            .on_color_scheme(move |_terminal| color_scheme)
+            .expect("không thể đăng ký callback color scheme");
+        terminal
+            .on_device_attributes(|_terminal| {
+                Some(DeviceAttributes {
+                    primary: PrimaryDeviceAttributes::new(
+                        ConformanceLevel::VT100,
+                        &[DeviceAttributeFeature(2)],
+                    ),
+                    secondary: SecondaryDeviceAttributes {
+                        device_type: DeviceType::VT220,
+                        firmware_version: 0,
+                        rom_cartridge: 0,
+                    },
+                    tertiary: TertiaryDeviceAttributes::default(),
+                })
+            })
+            .expect("không thể đăng ký callback device attributes");
         let mut grid = Self {
             terminal,
             render_state: RenderState::new().expect("không thể tạo Ghostty render state"),
@@ -122,43 +321,80 @@ impl TermGrid {
             mouse_encoder: mouse::Encoder::new().expect("không thể tạo Ghostty mouse encoder"),
             mouse_event: mouse::Event::new().expect("không thể tạo Ghostty mouse event"),
             screen: TermScreen::empty(rows, cols),
-            query_tail: Vec::new(),
+            host_theme,
+            cell_size,
+            size_report,
+            pending_effects,
+            xtgettcap: XtgettcapTracker::default(),
         };
-        grid.refresh();
+        grid.apply_host_theme(host_theme);
         grid
     }
 
-    pub fn process(&mut self, bytes: &[u8]) -> TerminalQueries {
-        // Giữ compatibility replies hiện có. Ghostty vẫn xử lý toàn bộ VT state;
-        // những query cần ghi ngược PTY được event loop trả lời sau hàm này.
-        let mut scan = std::mem::take(&mut self.query_tail);
-        scan.extend_from_slice(bytes);
-        let queries = TerminalQueries {
-            foreground: contains_bytes(&scan, b"\x1b]10;?"),
-            background: contains_bytes(&scan, b"\x1b]11;?"),
-            cursor_position: contains_bytes(&scan, b"\x1b[6n"),
-            device_attributes: contains_bytes(&scan, b"\x1b[c"),
-            keyboard_flags: contains_bytes(&scan, b"\x1b[?u"),
-        };
-        self.query_tail = scan[scan.len().saturating_sub(5)..].to_vec();
-        self.terminal.vt_write(bytes);
+    pub fn apply_host_theme(&mut self, theme: HostTerminalTheme) {
+        self.host_theme = theme;
+        let mut palette = Palette::default();
+        for (index, color) in theme.palette.into_iter().enumerate() {
+            if let Some(color) = color {
+                palette.0[index] = color;
+            }
+        }
+        self.terminal
+            .set_default_fg_color(theme.foreground)
+            .and_then(|terminal| terminal.set_default_bg_color(theme.background))
+            .and_then(|terminal| terminal.set_default_cursor_color(theme.cursor))
+            .and_then(|terminal| terminal.set_default_color_palette(Some(palette)))
+            .expect("không thể áp bảng màu terminal host");
         self.refresh();
-        queries
     }
 
-    pub fn resize(&mut self, rows: u16, cols: u16) {
+    pub fn process(&mut self, bytes: &[u8]) -> TerminalEffects {
+        self.xtgettcap.observe(bytes);
+        let xtgettcap = self.xtgettcap.drain();
+        let mut effects = TerminalEffects::default();
+        let mut written = 0;
+        for response in xtgettcap {
+            let end = response.end_offset.min(bytes.len());
+            if end > written {
+                self.terminal.vt_write(&bytes[written..end]);
+                effects.append(self.drain_effects());
+                written = end;
+            }
+            effects.pty_responses.push(response.bytes);
+        }
+        if written < bytes.len() {
+            self.terminal.vt_write(&bytes[written..]);
+            effects.append(self.drain_effects());
+        }
+        self.refresh();
+        effects
+    }
+
+    pub fn resize(&mut self, rows: u16, cols: u16) -> TerminalEffects {
         if rows == 0 || cols == 0 || self.screen.size() == (rows, cols) {
-            return;
+            return TerminalEffects::default();
         }
         let offset_from_bottom = self.scrollback();
+        if let Ok(mut size) = self.size_report.lock() {
+            size.rows = rows;
+            size.columns = cols;
+        }
         self.terminal
-            .resize(cols, rows, 1, 1)
+            .resize(cols, rows, self.cell_size.width, self.cell_size.height)
             .expect("libghostty-vt resize thất bại");
         if offset_from_bottom == 0 {
             self.refresh();
         } else {
             self.set_scrollback(offset_from_bottom);
         }
+        self.drain_effects()
+    }
+
+    fn drain_effects(&self) -> TerminalEffects {
+        self.pending_effects
+            .lock()
+            .map(|mut effects| std::mem::take(&mut *effects))
+            .unwrap_or_default()
     }
 
     pub fn screen(&self) -> &TermScreen {
@@ -201,6 +437,19 @@ impl TermGrid {
         self.terminal.is_mouse_tracking().unwrap_or(false)
     }
 
+    pub fn focus_report(&self, focused: bool) -> Option<&'static [u8]> {
+        self.terminal
+            .mode(Mode::FOCUS_EVENT)
+            .unwrap_or(false)
+            .then_some(if focused { b"\x1b[I" } else { b"\x1b[O" })
+    }
+
+    pub fn synchronized_output(&self) -> bool {
+        self.terminal
+            .mode(Mode::SYNC_OUTPUT)
+            .unwrap_or(false)
+    }
+
     /// Ứng dụng trong pane có yêu cầu bọc nội dung paste bằng DEC mode 2004 hay không.
     pub fn has_bracketed_paste(&self) -> bool {
         self.terminal.mode(Mode::BRACKETED_PASTE).unwrap_or(false)
@@ -216,6 +465,12 @@ impl TermGrid {
             KeyEventKind::Release => key::Action::Release,
         };
         let mut mods = convert_key_modifiers(event.modifiers);
+        if event.state.contains(KeyEventState::CAPS_LOCK) {
+            mods.insert(key::Mods::CAPS_LOCK);
+        }
+        if event.state.contains(KeyEventState::NUM_LOCK) {
+            mods.insert(key::Mods::NUM_LOCK);
+        }
         if matches!(event.code, KeyCode::BackTab) {
             mods.insert(key::Mods::SHIFT);
         }
@@ -236,15 +491,6 @@ impl TermGrid {
             .encode_to_vec(&self.key_event, &mut bytes)
             .ok()?;
         (!bytes.is_empty()).then_some(bytes)
-    }
-
-    /// Câu trả lời cho truy vấn Kitty keyboard protocol `CSI ? u`.
-    pub fn keyboard_flags_reply(&self) -> Vec<u8> {
-        let flags = self
-            .terminal
-            .kitty_keyboard_flags()
-            .unwrap_or(key::KittyKeyFlags::DISABLED);
-        format!("\x1b[?{}u", flags.bits()).into_bytes()
     }
 
     /// Mã hoá mouse event theo đúng tracking mode/format mà app đã bật.
@@ -292,8 +538,8 @@ impl TermGrid {
             .set_size(mouse::EncoderSize {
                 screen_width: u32::from(inner.width),
                 screen_height: u32::from(inner.height),
-                cell_width: 1,
-                cell_height: 1,
+                cell_width: self.cell_size.width.max(1),
+                cell_height: self.cell_size.height.max(1),
                 padding_top: 0,
                 padding_bottom: 0,
                 padding_right: 0,
@@ -309,13 +555,39 @@ impl TermGrid {
 
     fn refresh(&mut self) {
         let mut cells = Vec::new();
-        let (rows, cols, cursor, hide_cursor, contents) = {
+        let (
+            rows,
+            cols,
+            cursor,
+            hide_cursor,
+            cursor_shape,
+            cursor_blinking,
+            cursor_color,
+            default_fg,
+            default_bg,
+            contents,
+        ) = {
             let snapshot = self
                 .render_state
                 .update(&self.terminal)
                 .expect("không thể cập nhật Ghostty render state");
             let rows = snapshot.rows().unwrap_or(0);
             let cols = snapshot.cols().unwrap_or(0);
+            let active_palette = self
+                .terminal
+                .color_palette()
+                .expect("không thể đọc bảng màu hiện hành Ghostty");
+            let default_palette = self
+                .terminal
+                .default_color_palette()
+                .expect("không thể đọc bảng màu mặc định Ghostty");
+            let mut effective_fg = self.terminal.fg_color().ok().flatten();
+            let mut effective_bg = self.terminal.bg_color().ok().flatten();
+            if self.terminal.mode(Mode::REVERSE_COLORS).unwrap_or(false) {
+                std::mem::swap(&mut effective_fg, &mut effective_bg);
+            }
+            let default_fg = resolved_default_color(effective_fg, self.host_theme.foreground);
+            let default_bg = resolved_default_color(effective_bg, self.host_theme.background);
             cells.reserve(rows as usize * cols as usize);
 
             let mut row_iter = self
@@ -338,19 +610,54 @@ impl TermGrid {
                     ) {
                         contents.push_str(&text);
                     }
-                    let wide = match cell.raw_cell().and_then(|c| c.wide()) {
-                        Ok(CellWide::Wide) => CellWideKind::Wide,
-                        Ok(CellWide::SpacerTail | CellWide::SpacerHead) => CellWideKind::Spacer,
+                    let raw_cell = cell.raw_cell().ok();
+                    let wide = match raw_cell.and_then(|cell| cell.wide().ok()) {
+                        Some(CellWide::Wide) => CellWideKind::Wide,
+                        Some(CellWide::SpacerTail | CellWide::SpacerHead) => CellWideKind::Spacer,
                         _ => CellWideKind::Narrow,
                     };
+                    let fg =
+                        resolve_style_color(style.fg_color, &active_palette.0, &default_palette.0);
+                    let bg = raw_cell
+                        .and_then(|cell| match cell.content_tag().ok()? {
+                            CellContentTag::BgColorPalette => {
+                                cell.bg_color_palette().ok().and_then(|index| {
+                                    resolve_palette_color(
+                                        index.0,
+                                        &active_palette.0,
+                                        &default_palette.0,
+                                    )
+                                })
+                            }
+                            CellContentTag::BgColorRgb => {
+                                cell.bg_color_rgb().ok().map(TermColor::Rgb)
+                            }
+                            CellContentTag::Codepoint | CellContentTag::CodepointGrapheme => None,
+                        })
+                        .or_else(|| {
+                            resolve_style_color(
+                                style.bg_color,
+                                &active_palette.0,
+                                &default_palette.0,
+                            )
+                        });
+                    let underline_color = resolve_style_color(
+                        style.underline_color,
+                        &active_palette.0,
+                        &default_palette.0,
+                    );
                     cells.push(TermCell {
                         contents: text,
-                        fg: cell.fg_color().unwrap_or(None),
-                        bg: cell.bg_color().unwrap_or(None),
+                        fg,
+                        bg,
                         bold: style.bold,
                         faint: style.faint,
                         italic: style.italic,
                         underline: style.underline != Underline::None,
+                        underline_color,
+                        blink: style.blink,
+                        invisible: style.invisible,
+                        strikethrough: style.strikethrough,
                         inverse: style.inverse,
                         wide,
                     });
@@ -370,7 +677,27 @@ impl TermGrid {
                 .unwrap_or((0, 0));
             let hide_cursor = !snapshot.cursor_visible().unwrap_or(false)
                 || snapshot.cursor_viewport().ok().flatten().is_none();
-            (rows, cols, cursor, hide_cursor, contents)
+            let cursor_shape = match snapshot.cursor_visual_style().ok() {
+                Some(CursorVisualStyle::Bar) => CursorShape::Bar,
+                Some(CursorVisualStyle::Underline) => CursorShape::Underline,
+                Some(CursorVisualStyle::Block | CursorVisualStyle::BlockHollow) | Some(_) | None => {
+                    CursorShape::Block
+                }
+            };
+            let cursor_blinking = snapshot.cursor_blinking().unwrap_or(false);
+            let cursor_color = self.terminal.cursor_color().ok().flatten();
+            (
+                rows,
+                cols,
+                cursor,
+                hide_cursor,
+                cursor_shape,
+                cursor_blinking,
+                cursor_color,
+                default_fg,
+                default_bg,
+                contents,
+            )
         };
 
         self.screen = TermScreen {
@@ -379,9 +706,50 @@ impl TermGrid {
             cells,
             cursor,
             hide_cursor,
+            cursor_shape,
+            cursor_blinking,
+            cursor_color,
+            default_fg,
+            default_bg,
             contents,
         };
     }
+}
+
+fn resolved_default_color(color: Option<RgbColor>, host_color: Option<RgbColor>) -> Color {
+    match (color, host_color) {
+        (Some(color), Some(host)) if color != host => Color::Rgb(color.r, color.g, color.b),
+        _ => Color::Reset,
+    }
+}
+
+fn resolve_style_color(
+    color: StyleColor,
+    active_palette: &[RgbColor; 256],
+    default_palette: &[RgbColor; 256],
+) -> Option<TermColor> {
+    match color {
+        StyleColor::None => None,
+        StyleColor::Palette(index) => {
+            resolve_palette_color(index.0, active_palette, default_palette)
+        }
+        StyleColor::Rgb(color) => Some(TermColor::Rgb(color)),
+    }
+}
+
+fn resolve_palette_color(
+    index: u8,
+    active_palette: &[RgbColor; 256],
+    default_palette: &[RgbColor; 256],
+) -> Option<TermColor> {
+    let index_usize = usize::from(index);
+    Some(
+        if active_palette[index_usize] == default_palette[index_usize] {
+            TermColor::Indexed(index)
+        } else {
+            TermColor::Rgb(active_palette[index_usize])
+        },
+    )
 }
 
 fn convert_key_modifiers(modifiers: KeyModifiers) -> key::Mods {
@@ -520,6 +888,11 @@ impl TermScreen {
             cells: vec![TermCell::default(); rows as usize * cols as usize],
             cursor: (0, 0),
             hide_cursor: false,
+            cursor_shape: CursorShape::Block,
+            cursor_blinking: false,
+            cursor_color: None,
+            default_fg: Color::Reset,
+            default_bg: Color::Reset,
             contents: String::new(),
         }
     }
@@ -534,6 +907,18 @@ impl TermScreen {
 
     pub fn hide_cursor(&self) -> bool {
         self.hide_cursor
+    }
+
+    pub fn cursor_shape(&self) -> CursorShape {
+        self.cursor_shape
+    }
+
+    pub fn cursor_blinking(&self) -> bool {
+        self.cursor_blinking
+    }
+
+    pub fn cursor_color(&self) -> Option<RgbColor> {
+        self.cursor_color
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -581,24 +966,6 @@ impl TermScreen {
     }
 }
 
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|part| part == needle)
-}
-
-/// Mã hoá câu trả lời OSC 10/11 theo dạng RGB 16-bit mà xterm quy ước.
-pub fn palette_reply(slot: u8, (r, g, b): (u8, u8, u8)) -> Vec<u8> {
-    format!("\x1b]{slot};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x1b\\").into_bytes()
-}
-
-/// Phản hồi DSR vị trí cursor, dùng toạ độ 1-based theo chuẩn terminal.
-pub fn cursor_position_reply((row, col): (u16, u16)) -> Vec<u8> {
-    format!("\x1b[{};{}R", row.saturating_add(1), col.saturating_add(1)).into_bytes()
-}
-
-fn convert_color(color: Option<RgbColor>) -> Color {
-    color.map_or(Color::Reset, |c| Color::Rgb(c.r, c.g, c.b))
-}
-
 /// Widget vẽ snapshot viewport của Ghostty vào một `Rect`.
 pub struct TermView<'a> {
     pub screen: &'a TermScreen,
@@ -628,13 +995,14 @@ impl Widget for TermView<'_> {
                 let x = area.x + col;
                 let y = area.y + row;
                 if let Some(buf_cell) = buf.cell_mut((x, y)) {
+                    buf_cell.reset();
                     buf_cell.set_symbol(if cell.contents.is_empty() {
                         " "
                     } else {
                         &cell.contents
                     });
-                    let mut fg = convert_color(cell.fg);
-                    let mut bg = convert_color(cell.bg);
+                    let mut fg = cell.fg.map_or(self.screen.default_fg, TermColor::ratatui);
+                    let mut bg = cell.bg.map_or(self.screen.default_bg, TermColor::ratatui);
                     let selected = self
                         .selection
                         .is_some_and(|selection| selection.contains(GridPoint { row, col }));
@@ -646,6 +1014,9 @@ impl Widget for TermView<'_> {
                         bg = blend_selection_bg(bg, self.default_bg);
                     }
                     let mut style = Style::default().fg(fg).bg(bg);
+                    if let Some(color) = cell.underline_color {
+                        style = style.underline_color(color.ratatui());
+                    }
                     if reverse_defaults {
                         style = style.add_modifier(Modifier::REVERSED);
                     }
@@ -660,6 +1031,15 @@ impl Widget for TermView<'_> {
                     }
                     if cell.underline {
                         style = style.add_modifier(Modifier::UNDERLINED);
+                    }
+                    if cell.blink {
+                        style = style.add_modifier(Modifier::SLOW_BLINK);
+                    }
+                    if cell.invisible {
+                        style = style.add_modifier(Modifier::HIDDEN);
+                    }
+                    if cell.strikethrough {
+                        style = style.add_modifier(Modifier::CROSSED_OUT);
                     }
                     buf_cell.set_style(style);
                 }
@@ -695,6 +1075,28 @@ mod tests {
         let cell = &buf[(0, 0)];
         assert_eq!(cell.fg, Color::Rgb(12, 34, 56));
         assert!(cell.modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn renders_extended_text_attributes_and_underline_color() {
+        let area = Rect::new(0, 0, 1, 1);
+        let mut grid = TermGrid::new(1, 1, TEST_SCROLLBACK_LIMIT_BYTES);
+        grid.process(b"\x1b[3;4;5;8;9;58;2;10;20;30mX");
+        let mut buf = Buffer::empty(area);
+        TermView {
+            screen: grid.screen(),
+            selection: None,
+            default_bg: Color::Reset,
+        }
+        .render(area, &mut buf);
+
+        let cell = &buf[(0, 0)];
+        assert_eq!(cell.underline_color, Color::Rgb(10, 20, 30));
+        assert!(cell.modifier.contains(Modifier::ITALIC));
+        assert!(cell.modifier.contains(Modifier::UNDERLINED));
+        assert!(cell.modifier.contains(Modifier::SLOW_BLINK));
+        assert!(cell.modifier.contains(Modifier::HIDDEN));
+        assert!(cell.modifier.contains(Modifier::CROSSED_OUT));
     }
 
     #[test]
@@ -771,8 +1173,8 @@ mod tests {
         let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
         let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
 
-        grid.process(b"\x1b[>7u\x1b[?u");
-        assert_eq!(grid.keyboard_flags_reply(), b"\x1b[?7u");
+        let effects = grid.process(b"\x1b[>7u\x1b[?u");
+        assert_eq!(effects.pty_responses, [b"\x1b[?7u".to_vec()]);
         assert_eq!(grid.encode_key(shift_enter), Some(b"\x1b[13;2u".to_vec()));
     }
 
@@ -807,6 +1209,133 @@ mod tests {
     }
 
     #[test]
+    fn surfaces_terminal_effects_from_ghostty_callbacks() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        let effects = grid.process(
+            b"\x07\x1b]0;build log\x07\x1b]7;file://localhost/tmp\x1b\\\x1b]52;c;aGVsbG8=\x1b\\",
+        );
+
+        assert_eq!(effects.bell_count, 1);
+        assert_eq!(effects.title.as_deref(), Some("build log"));
+        assert_eq!(effects.cwd.as_deref(), Some("file://localhost/tmp"));
+        assert_eq!(
+            effects.clipboard_writes,
+            [ClipboardWriteRequest {
+                target: ClipboardTarget::Standard,
+                data: b"hello".to_vec(),
+            }]
+        );
+    }
+
+    #[test]
+    fn keeps_host_palette_index_and_flattens_child_override() {
+        let mut theme = HostTerminalTheme::default();
+        theme.palette[1] = Some(RgbColor {
+            r: 12,
+            g: 34,
+            b: 56,
+        });
+        let mut grid = TermGrid::with_host_theme(1, 2, TEST_SCROLLBACK_LIMIT_BYTES, theme);
+        grid.process(b"\x1b[31mX");
+
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buf = Buffer::empty(area);
+        TermView {
+            screen: grid.screen(),
+            selection: None,
+            default_bg: Color::Reset,
+        }
+        .render(area, &mut buf);
+        assert_eq!(buf[(0, 0)].fg, Color::Indexed(1));
+
+        grid.process(b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\\r\x1b[31mY");
+        let mut buf = Buffer::empty(area);
+        TermView {
+            screen: grid.screen(),
+            selection: None,
+            default_bg: Color::Reset,
+        }
+        .render(area, &mut buf);
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(0xaa, 0xbb, 0xcc));
+    }
+
+    #[test]
+    fn reverse_screen_mode_swaps_host_default_colors() {
+        let theme = HostTerminalTheme {
+            foreground: Some(RgbColor { r: 220, g: 221, b: 222 }),
+            background: Some(RgbColor { r: 10, g: 11, b: 12 }),
+            ..HostTerminalTheme::default()
+        };
+        let mut grid = TermGrid::with_host_theme(1, 1, TEST_SCROLLBACK_LIMIT_BYTES, theme);
+        grid.process(b"\x1b[?5h");
+        assert_eq!(grid.screen.default_fg, Color::Rgb(10, 11, 12));
+        assert_eq!(grid.screen.default_bg, Color::Rgb(220, 221, 222));
+    }
+
+    #[test]
+    fn host_default_uses_reset_but_child_override_uses_rgb() {
+        let theme = HostTerminalTheme {
+            background: Some(RgbColor {
+                r: 40,
+                g: 42,
+                b: 54,
+            }),
+            ..HostTerminalTheme::default()
+        };
+        let mut grid = TermGrid::with_host_theme(1, 1, TEST_SCROLLBACK_LIMIT_BYTES, theme);
+        assert_eq!(grid.screen.default_bg, Color::Reset);
+
+        grid.process(b"\x1b]11;rgb:aaaa/bbbb/cccc\x1b\\");
+        assert_eq!(grid.screen.default_bg, Color::Rgb(0xaa, 0xbb, 0xcc));
+    }
+
+    #[test]
+    fn tracks_focus_and_synchronized_output_modes() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        assert_eq!(grid.focus_report(true), None);
+        assert!(!grid.synchronized_output());
+
+        grid.process(b"\x1b[?1004h\x1b[?2026h");
+        assert_eq!(grid.focus_report(true), Some(b"\x1b[I".as_slice()));
+        assert_eq!(grid.focus_report(false), Some(b"\x1b[O".as_slice()));
+        assert!(grid.synchronized_output());
+
+        grid.process(b"\x1b[?1004l\x1b[?2026l");
+        assert_eq!(grid.focus_report(true), None);
+        assert!(!grid.synchronized_output());
+    }
+
+    #[test]
+    fn reports_cell_and_grid_size_from_host_capabilities() {
+        let mut grid = TermGrid::with_host_capabilities(
+            24,
+            80,
+            TEST_SCROLLBACK_LIMIT_BYTES,
+            HostTerminalTheme::default(),
+            CellPixelSize { width: 9, height: 18 },
+        );
+        let effects = grid.process(b"\x1b[16t\x1b[18t");
+        let responses = effects.pty_responses.concat();
+        assert!(responses
+            .windows(b"\x1b[6;18;9t".len())
+            .any(|part| part == b"\x1b[6;18;9t"));
+        assert!(responses
+            .windows(b"\x1b[8;24;80t".len())
+            .any(|part| part == b"\x1b[8;24;80t"));
+    }
+
+    #[test]
+    fn tracks_cursor_shape_and_blinking() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        grid.process(b"\x1b[5 q");
+        assert_eq!(grid.screen().cursor_shape(), CursorShape::Bar);
+        assert!(grid.screen().cursor_blinking());
+        grid.process(b"\x1b[4 q");
+        assert_eq!(grid.screen().cursor_shape(), CursorShape::Underline);
+        assert!(!grid.screen().cursor_blinking());
+    }
+
+    #[test]
     fn tracks_bracketed_paste_mode() {
         let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
         assert!(!grid.has_bracketed_paste());
@@ -819,28 +1348,81 @@ mod tests {
     }
 
     #[test]
-    fn detects_split_palette_queries_and_formats_reply() {
-        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+    fn answers_split_default_color_query_from_host_theme() {
+        let theme = HostTerminalTheme {
+            background: Some(RgbColor {
+                r: 40,
+                g: 42,
+                b: 54,
+            }),
+            ..HostTerminalTheme::default()
+        };
+        let mut grid = TermGrid::with_host_theme(1, 8, TEST_SCROLLBACK_LIMIT_BYTES, theme);
         let first = grid.process(b"\x1b]1");
-        assert!(!first.background);
+        assert!(first.pty_responses.is_empty());
         let second = grid.process(b"1;?\x1b\\");
-        assert!(second.background);
-        assert_eq!(
-            palette_reply(11, (40, 42, 54)),
-            b"\x1b]11;rgb:2828/2a2a/3636\x1b\\"
-        );
+        assert_eq!(second.pty_responses.len(), 1);
+        assert!(second.pty_responses[0].starts_with(b"\x1b]11;rgb:2828/2a2a/3636"));
+    }
+
+    #[test]
+    fn answers_palette_query_from_host_theme() {
+        let mut theme = HostTerminalTheme::default();
+        theme.palette[7] = Some(RgbColor { r: 12, g: 34, b: 56 });
+        let mut grid =
+            TermGrid::with_host_theme(1, 8, TEST_SCROLLBACK_LIMIT_BYTES, theme);
+        let queries = grid.process(b"\x1b]4;7;?\x1b\\");
+        assert_eq!(queries.pty_responses.len(), 1);
+        assert!(queries.pty_responses[0].starts_with(b"\x1b]4;7;rgb:0c0c/2222/3838"));
+    }
+
+    #[test]
+    fn forwards_xtversion_and_xtgettcap_responses() {
+        let mut grid = TermGrid::new(1, 8, TEST_SCROLLBACK_LIMIT_BYTES);
+        let effects = grid.process(b"\x1b[>q\x1bP+q524742\x1b\\");
+        let responses = effects.pty_responses.concat();
+        assert!(responses
+            .windows(b"termul 0.1.0".len())
+            .any(|part| part == b"termul 0.1.0"));
+        assert!(responses
+            .windows(b"524742".len())
+            .any(|part| part == b"524742"));
     }
 
     #[test]
     fn detects_batched_startup_capability_queries() {
-        let mut grid = TermGrid::new(24, 80, TEST_SCROLLBACK_LIMIT_BYTES);
-        let queries = grid.process(b"\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c");
-        assert!(queries.cursor_position);
-        assert!(queries.foreground);
-        assert!(queries.background);
-        assert!(queries.keyboard_flags);
-        assert!(queries.device_attributes);
-        assert_eq!(cursor_position_reply((4, 9)), b"\x1b[5;10R");
+        let theme = HostTerminalTheme {
+            foreground: Some(RgbColor {
+                r: 248,
+                g: 248,
+                b: 242,
+            }),
+            background: Some(RgbColor {
+                r: 40,
+                g: 42,
+                b: 54,
+            }),
+            cursor: Some(RgbColor {
+                r: 248,
+                g: 248,
+                b: 242,
+            }),
+            ..HostTerminalTheme::default()
+        };
+        let mut grid = TermGrid::with_host_theme(24, 80, TEST_SCROLLBACK_LIMIT_BYTES, theme);
+        let effects = grid.process(
+            b"\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?996n\x1b[?u\x1b[c",
+        );
+        let responses = effects.pty_responses.concat();
+        assert!(responses.windows(6).any(|part| part == b"\x1b[1;1R"));
+        assert!(responses.windows(5).any(|part| part == b"\x1b[?0u"));
+        assert!(responses.windows(7).any(|part| part == b"\x1b[?1;2c"));
+        assert!(responses.windows(5).any(|part| part == b"\x1b]10;"));
+        assert!(responses.windows(5).any(|part| part == b"\x1b]11;"));
+        assert!(responses.windows(5).any(|part| part == b"\x1b]12;"));
+        assert!(responses
+            .windows(b"\x1b[?997;1n".len())
+            .any(|part| part == b"\x1b[?997;1n"));
     }
 
     #[test]

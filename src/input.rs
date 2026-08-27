@@ -13,13 +13,13 @@ use crate::app::*;
 use crate::config::key_matches;
 use crate::confirm::*;
 use crate::layout::{PaneId, SplitDir};
-use crate::menu::*;
 use crate::mention::*;
+use crate::menu::*;
 use crate::palette::*;
 use crate::rename::*;
 use crate::session::*;
 use crate::suggest::*;
-use crate::term::GridPoint;
+use crate::term::{ClipboardTarget, GridPoint};
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if key.kind == KeyEventKind::Release {
@@ -33,6 +33,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
+    clear_input_draw_target(app);
     // Modal ưu tiên: palette > rename > confirm > menu.
     if app.palette.is_some() {
         handle_palette_key(app, key);
@@ -70,10 +71,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         app.prefix_active = true;
         return;
     }
-    if key_matches(key.code, key.modifiers, app.cfg.keys.quit) {
-        app.should_quit = true;
-        return;
-    }
+    // if key_matches(key.code, key.modifiers, app.cfg.keys.quit) {
+    //     app.should_quit = true;
+    //     return;
+    // }
     // Popup mention ưu tiên hơn gợi ý history.
     if app.mention.is_some() {
         let mv = app.cfg.suggest_max_visible;
@@ -153,6 +154,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// Xử lý một lần paste nguyên khối. Chỉ bọc marker khi ứng dụng trong pane
 /// đã bật DEC mode 2004; nếu không, gửi nội dung thô như terminal thông thường.
 pub(crate) fn handle_paste(app: &mut App, text: String) {
+    clear_input_draw_target(app);
     if let Some(pal) = &mut app.palette {
         pal.query.push_str(&text);
         palette_research(app);
@@ -188,18 +190,31 @@ fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
 
 fn is_selection_copy_key(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Char('c' | 'C'))
-        && matches!(key.modifiers, KeyModifiers::CONTROL)
+        && matches!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }
 
-fn write_clipboard(bytes: &[u8]) -> bool {
+pub(crate) fn write_clipboard(bytes: &[u8]) -> bool {
+    write_clipboard_to(bytes, ClipboardTarget::Standard)
+}
+
+pub(crate) fn write_clipboard_to(bytes: &[u8], target: ClipboardTarget) -> bool {
+    #[cfg(not(target_os = "linux"))]
+    let _ = target;
     #[cfg(target_os = "macos")]
     let commands: &[(&str, &[&str])] = &[("pbcopy", &[])];
     #[cfg(target_os = "linux")]
-    let commands: &[(&str, &[&str])] = &[
-        ("wl-copy", &[]),
-        ("xclip", &["-selection", "clipboard"]),
-        ("xsel", &["--clipboard", "--input"]),
-    ];
+    let commands: &[(&str, &[&str])] = match target {
+        ClipboardTarget::Standard => &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ],
+        ClipboardTarget::Primary => &[
+            ("wl-copy", &["--primary"]),
+            ("xclip", &["-selection", "primary"]),
+            ("xsel", &["--primary", "--input"]),
+        ],
+    };
     #[cfg(target_os = "windows")]
     let commands: &[(&str, &[&str])] = &[("clip.exe", &[])];
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -268,6 +283,12 @@ pub(crate) fn center(r: Rect) -> (i32, i32) {
 }
 
 pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
+    if matches!(
+        me.kind,
+        MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+    ) {
+        clear_input_draw_target(app);
+    }
     let (col, row) = (me.column, me.row);
     // Modal ưu tiên: palette > rename > confirm > menu > pane.
     if app.palette.is_some() {
@@ -437,7 +458,6 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
                     let text = pane.grid.screen().selected_text(selection.range);
                     if text.trim().is_empty() {
                         app.selection = None;
-                        return;
                     }
                 }
             } else {
@@ -509,6 +529,13 @@ pub(crate) fn divider_at(app: &App, col: u16, row: u16) -> Option<DragState> {
             dir: d.dir,
             bounds: d.bounds,
         })
+}
+
+fn clear_input_draw_target(app: &mut App) {
+    let focus = active_focus(app);
+    if let Some(pane) = app.panes.get_mut(&focus) {
+        pane.input_draw_target = None;
+    }
 }
 
 pub(crate) fn pane_at(app: &App, col: u16, row: u16) -> Option<PaneId> {

@@ -66,6 +66,10 @@ pub(crate) fn suggest_accept(app: &mut App) {
     // (Enter kế tiếp sẽ chạy lệnh thay vì accept lần nữa).
     app.suggest_dismissed_for = Some(full.clone());
     if let Some(pane) = app.panes.get_mut(&focus) {
+        pane.input_draw_target = Some(InputLine {
+            cursor: full.chars().count(),
+            buffer: full.clone(),
+        });
         let mut bytes = vec![0x01, 0x0b]; // Ctrl+A (đầu dòng) + Ctrl+K (xoá tới cuối)
         bytes.extend_from_slice(full.as_bytes());
         pane.pty.write(&bytes);
