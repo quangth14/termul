@@ -116,7 +116,7 @@ pub(crate) fn handle_osc(app: &mut App, pid: PaneId, ev: OscEvent) {
         OscEvent::CommandStart { cmd, cwd } => {
             if let Some(pane) = app.panes.get_mut(&pid) {
                 pane.cwd = cwd.clone();
-                pane.input_draw_target = None;
+                pane.input = InputLine::default();
                 pane.pending = Some(PendingCmd {
                     cmd,
                     cwd,
@@ -128,10 +128,7 @@ pub(crate) fn handle_osc(app: &mut App, pid: PaneId, ev: OscEvent) {
             app.suggest_dismissed_for = None;
         }
         OscEvent::CommandEnd { exit } => {
-            let done = app.panes.get_mut(&pid).and_then(|pane| {
-                pane.input_draw_target = None;
-                pane.pending.take()
-            });
+            let done = app.panes.get_mut(&pid).and_then(|pane| pane.pending.take());
             if let Some(p) = done {
                 let dur = p.start.elapsed().as_millis() as u64;
                 app.history.record(&p.cmd, &p.cwd, exit, dur);
@@ -147,9 +144,6 @@ pub(crate) fn handle_osc(app: &mut App, pid: PaneId, ev: OscEvent) {
             if let Some(pane) = app.panes.get_mut(&pid) {
                 pane.input = InputLine { buffer, cursor };
                 pane.cwd = cwd;
-                if pane.input_draw_target.as_ref() == Some(&pane.input) {
-                    pane.input_draw_target = None;
-                }
             }
             if pid == active_focus(app) {
                 if !rebuild_mention(app) {

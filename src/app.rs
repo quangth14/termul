@@ -41,7 +41,7 @@ pub(crate) struct PendingCmd {
 }
 
 /// Dòng nhập hiện tại của pane (từ zle line-pre-redraw).
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Default, Clone)]
 pub(crate) struct InputLine {
     pub(crate) buffer: String,
     pub(crate) cursor: usize, // vị trí con trỏ theo ký tự
@@ -56,11 +56,9 @@ pub(crate) struct Pane {
     pub(crate) title: String,
     pub(crate) pending: Option<PendingCmd>,
     pub(crate) input: InputLine,
-    /// Trạng thái cuối đang chờ trước khi cho phép vẽ lại input shell.
-    pub(crate) input_draw_target: Option<InputLine>,
 }
 
-/// Fuzzy history palette (mở bằng Ctrl+B r).
+/// Fuzzy history palette (mở bằng Ctrl+` r).
 pub(crate) struct Palette {
     pub(crate) query: String,
     pub(crate) results: Vec<HistoryEntry>,

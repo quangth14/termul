@@ -54,8 +54,7 @@ pub(crate) fn rebuild_suggest(app: &mut App) {
     };
 }
 
-/// Chấp nhận gợi ý đang chọn: thay CẢ dòng nhập bằng lệnh đầy đủ
-/// Ctrl+A + Ctrl+K xoá dòng trước khi ghi lệnh đầy đủ.
+/// Chấp nhận gợi ý đang chọn bằng một lần cập nhật ZLE nguyên tử.
 pub(crate) fn suggest_accept(app: &mut App) {
     let focus = active_focus(app);
     let Some(sug) = app.suggest.take() else { return };
@@ -65,14 +64,19 @@ pub(crate) fn suggest_accept(app: &mut App) {
     // Sau khi thay dòng, buffer sẽ bằng `full`; đánh dấu để popup không tự mở lại
     // (Enter kế tiếp sẽ chạy lệnh thay vì accept lần nữa).
     app.suggest_dismissed_for = Some(full.clone());
+    let atomic_edit = app
+        .integ
+        .prepare_zle_edit(focus.0, &full, full.chars().count())
+        .ok()
+        .flatten();
     if let Some(pane) = app.panes.get_mut(&focus) {
-        pane.input_draw_target = Some(InputLine {
-            cursor: full.chars().count(),
-            buffer: full.clone(),
-        });
-        let mut bytes = vec![0x01, 0x0b]; // Ctrl+A (đầu dòng) + Ctrl+K (xoá tới cuối)
-        bytes.extend_from_slice(full.as_bytes());
-        pane.pty.write(&bytes);
+        if let Some(bytes) = atomic_edit {
+            pane.pty.write(&bytes);
+        } else {
+            let mut bytes = vec![0x01, 0x0b]; // Fallback cho history nhiều dòng/tab.
+            bytes.extend_from_slice(full.as_bytes());
+            pane.pty.write(&bytes);
+        }
     }
 }
 

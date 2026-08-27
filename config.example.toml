@@ -30,8 +30,8 @@ exclude = ["target/", "*.log", "secrets/**"]
 scrollback_limit_bytes = 10000000
 
 [keys]
-# Modifier combos: "ctrl+b", "alt+x", "shift+enter", or a bare key like "enter".
-prefix = "ctrl+b"          # enter prefix mode
+# Modifier combos: "ctrl+`", "alt+x", "shift+enter", or a bare key like "enter".
+prefix = "ctrl+`"          # enter prefix mode
 quit = "ctrl+q"            # quit immediately
 
 # Single-character commands pressed AFTER the prefix key.

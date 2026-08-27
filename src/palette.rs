@@ -1,4 +1,4 @@
-//! Fuzzy history palette (Ctrl+B r): mở, tìm lại, chấp nhận, xử lý phím/chuột,
+//! Fuzzy history palette (Ctrl+` r): mở, tìm lại, chấp nhận, xử lý phím/chuột,
 //! và render.
 
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};

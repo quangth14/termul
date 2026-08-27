@@ -3,11 +3,14 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 
 /// Nội dung `.zshenv` được inject: khôi phục môi trường user rồi cài hook
 /// preexec/precmd phát OSC báo lệnh + exit code + cwd cho termul.
+static NEXT_INTEGRATION_ID: AtomicU64 = AtomicU64::new(0);
+
 const ZSHENV: &str = r#"# termul shell integration (tự sinh) — an toàn với plugin của user
 () {
   # Khôi phục ZDOTDIR gốc để .zshrc/.zprofile của user nạp bình thường
@@ -42,12 +45,28 @@ if [[ -o interactive ]]; then
     printf '\e]1337;TermulBuf=%d;%s;%s\a' "$CURSOR" "$b64buf" "$b64cwd" >/dev/tty
   }
 
+  # Đọc edit đã được termul ghi riêng cho pane rồi cập nhật ZLE nguyên tử.
+  _termul_apply_edit() {
+    local cursor buffer
+    IFS=$'\t' read -r cursor buffer <"$TERMUL_EDIT_FILE" || return
+    [[ "$cursor" == <-> ]] || return
+    printf '\e[?2026h' >/dev/tty
+    BUFFER="$buffer"
+    CURSOR="$cursor"
+    POSTDISPLAY=''
+    zle redisplay
+    printf '\e[?2026l' >/dev/tty
+  }
+
   # Cài hook sau khi .zshrc của user nạp xong (một lần) để không bị plugin ghi đè
   _termul_init() {
     add-zsh-hook -d precmd _termul_init
     add-zsh-hook preexec _termul_preexec
     add-zsh-hook precmd _termul_precmd
     add-zle-hook-widget line-pre-redraw _termul_report_buffer
+    zle -N _termul_apply_edit
+    bindkey -M emacs $'\e[99~' _termul_apply_edit
+    bindkey -M viins $'\e[99~' _termul_apply_edit
   }
   add-zsh-hook precmd _termul_init
 fi
@@ -61,7 +80,8 @@ pub struct ShellIntegration {
 impl ShellIntegration {
     /// Tạo thư mục tạm và ghi `.zshenv`.
     pub fn setup() -> Result<Self> {
-        let dir = std::env::temp_dir().join(format!("termul-zdotdir-{}", std::process::id()));
+        let id = NEXT_INTEGRATION_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("termul-zdotdir-{}-{id}", std::process::id()));
         fs::create_dir_all(&dir)?;
         fs::write(dir.join(".zshenv"), ZSHENV)?;
         Ok(Self { dir })
@@ -69,7 +89,7 @@ impl ShellIntegration {
 
     /// Biến môi trường cần đặt khi spawn shell `shell` để bật integration.
     /// Trả rỗng nếu shell không phải zsh (chưa hỗ trợ shell khác).
-    pub fn env_for(&self, shell: &str) -> Vec<(String, String)> {
+    pub fn env_for(&self, shell: &str, pane_id: u64) -> Vec<(String, String)> {
         let is_zsh = std::path::Path::new(shell)
             .file_name()
             .and_then(|n| n.to_str())
@@ -80,14 +100,70 @@ impl ShellIntegration {
         }
         let orig = std::env::var("ZDOTDIR").unwrap_or_default();
         vec![
-            ("ZDOTDIR".to_string(), self.dir.to_string_lossy().to_string()),
+            (
+                "ZDOTDIR".to_string(),
+                self.dir.to_string_lossy().to_string(),
+            ),
             ("TERMUL_ORIG_ZDOTDIR".to_string(), orig),
+            (
+                "TERMUL_EDIT_FILE".to_string(),
+                self.edit_file(pane_id).to_string_lossy().to_string(),
+            ),
         ]
+    }
+
+    /// Chuẩn bị edit cho widget của đúng pane rồi trả phím kích hoạt widget.
+    pub(crate) fn prepare_zle_edit(
+        &self,
+        pane_id: u64,
+        buffer: &str,
+        cursor: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        if buffer.contains(['\t', '\n', '\r']) || cursor > buffer.chars().count() {
+            return Ok(None);
+        }
+        fs::write(self.edit_file(pane_id), format!("{cursor}\t{buffer}\n"))?;
+        Ok(Some(b"\x1b[99~".to_vec()))
+    }
+
+    fn edit_file(&self, pane_id: u64) -> PathBuf {
+        self.dir.join(format!("edit-{pane_id}"))
     }
 }
 
 impl Drop for ShellIntegration {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellIntegration;
+
+    #[test]
+    fn clears_zsh_autosuggestion_postdisplay_during_atomic_edit() {
+        let integration = ShellIntegration::setup().unwrap();
+        let script = std::fs::read_to_string(integration.dir.join(".zshenv")).unwrap();
+        assert!(!script.contains("_ZSH_AUTOSUGGEST_DISABLED"));
+        assert!(script.contains("POSTDISPLAY=''"));
+    }
+
+    #[test]
+    fn prepares_atomic_zle_edit_and_rejects_multiline_payload() {
+        let integration = ShellIntegration::setup().unwrap();
+        assert_eq!(
+            integration.prepare_zle_edit(7, "echo hé", 4).unwrap(),
+            Some(b"\x1b[99~".to_vec())
+        );
+        assert_eq!(
+            std::fs::read(integration.edit_file(7)).unwrap(),
+            b"4\techo h\xc3\xa9\n"
+        );
+        assert_eq!(
+            integration.prepare_zle_edit(7, "echo\nnext", 4).unwrap(),
+            None
+        );
+        assert_eq!(integration.prepare_zle_edit(7, "echo", 5).unwrap(), None);
     }
 }

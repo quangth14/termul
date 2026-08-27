@@ -25,8 +25,9 @@ mod xtgettcap;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -138,6 +139,8 @@ fn restore_terminal(terminal: &mut Terminal<Backend>) -> Result<()> {
     Ok(())
 }
 
+const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
+
 fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
     let size = terminal.size()?;
     let area = Rect::new(0, 0, size.width, size.height);
@@ -154,7 +157,7 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
 
     let first_id = PaneId(0);
     let initial_cwd = std::env::current_dir()?.to_string_lossy().into_owned();
-    let env = integ.env_for(&shell);
+    let env = integ.env_for(&shell, first_id.0);
     let pty = PtySession::spawn(first_id, init_rows, init_cols, &shell, &env, tx.clone())?;
     spawn_input_thread(tx.clone());
 
@@ -175,7 +178,6 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
                 title: String::new(),
                 pending: None,
                 input: InputLine::default(),
-                input_draw_target: None,
             },
         )]),
         tabs: vec![Tab {
@@ -218,29 +220,77 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
 
     draw(terminal, &mut app)?;
 
-    while let Ok(ev) = rx.recv() {
-        let mut force_draw = !matches!(&ev, AppEvent::PtyData(_, _));
-        handle_event(&mut app, ev);
-        while let Ok(ev) = rx.try_recv() {
-            force_draw |= !matches!(&ev, AppEvent::PtyData(_, _));
-            handle_event(&mut app, ev);
+    let mut last_render_at = Instant::now();
+    let mut needs_render = false;
+    let mut force_render = false;
+    loop {
+        let synchronized_output = app
+            .panes
+            .get(&app.tabs[app.active_tab].focus)
+            .is_some_and(|pane| pane.grid.synchronized_output());
+        let wait = render_wait(
+            needs_render,
+            force_render,
+            synchronized_output,
+            last_render_at.elapsed(),
+        );
+        let event = match wait {
+            Some(wait) => match rx.recv_timeout(wait) {
+                Ok(event) => Some(event),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(event) => Some(event),
+                Err(_) => break,
+            },
+        };
+
+        if let Some(event) = event {
+            force_render |= !matches!(&event, AppEvent::PtyData(_, _));
+            needs_render = true;
+            handle_event(&mut app, event);
+            while let Ok(event) = rx.try_recv() {
+                force_render |= !matches!(&event, AppEvent::PtyData(_, _));
+                handle_event(&mut app, event);
+            }
         }
         if app.should_quit {
             break;
         }
-        let focused_pane = app.panes.get(&app.tabs[app.active_tab].focus);
-        let defer_sync_output = focused_pane.is_some_and(|pane| pane.grid.synchronized_output());
-        let defer_input_animation = focused_pane.is_some_and(|pane| pane.input_draw_target.is_some());
-        if should_draw(force_draw, defer_sync_output, defer_input_animation) {
+
+        let synchronized_output = app
+            .panes
+            .get(&app.tabs[app.active_tab].focus)
+            .is_some_and(|pane| pane.grid.synchronized_output());
+        if render_wait(
+            needs_render,
+            force_render,
+            synchronized_output,
+            last_render_at.elapsed(),
+        ) == Some(Duration::ZERO)
+        {
             draw(terminal, &mut app)?;
+            last_render_at = Instant::now();
+            needs_render = false;
+            force_render = false;
         }
     }
 
     Ok(())
 }
 
-fn should_draw(force_draw: bool, defer_sync_output: bool, defer_input_animation: bool) -> bool {
-    !defer_input_animation && (force_draw || !defer_sync_output)
+fn render_wait(
+    needs_render: bool,
+    force_render: bool,
+    synchronized_output: bool,
+    elapsed: Duration,
+) -> Option<Duration> {
+    if !needs_render || (synchronized_output && !force_render) {
+        None
+    } else {
+        Some(MIN_RENDER_INTERVAL.saturating_sub(elapsed))
+    }
 }
 
 fn spawn_input_thread(tx: Sender<AppEvent>) {
@@ -270,7 +320,7 @@ mod tests {
     use crate::confirm::{confirm_option_at, confirm_rect};
     use crate::event::handle_osc;
     use crate::history::HistoryStore;
-    use crate::input::handle_mouse;
+    use crate::input::{handle_key, handle_mouse};
     use crate::layout::{Layout, PaneId};
     use crate::menu::{menu_item_at, popup_rect};
     use crate::osc::{OscEvent, OscScanner};
@@ -280,14 +330,46 @@ mod tests {
     use crate::suggest::{rebuild_suggest, suggest_accept};
     use crate::term::{GridPoint, TermGrid};
     use crate::terminal_theme::HostTerminalTheme;
-    use crate::should_draw;
+    use crate::{MIN_RENDER_INTERVAL, render_wait};
 
     #[test]
-    fn input_animation_deferral_overrides_forced_draw() {
-        assert!(!should_draw(true, false, true));
-        assert!(should_draw(true, true, false));
-        assert!(should_draw(false, false, false));
-        assert!(!should_draw(false, true, false));
+    fn delete_removes_selection_from_current_zle_input() {
+        let mut app = one_pane_app();
+        let pid = PaneId(0);
+        app.panes.get_mut(&pid).unwrap().grid.process(b"$ abcdef");
+        set_input(&mut app, "abcdef");
+        app.selection = Some(PaneSelection {
+            pane: pid,
+            range: crate::term::GridSelection {
+                anchor: GridPoint { row: 0, col: 3 },
+                end: GridPoint { row: 0, col: 4 },
+            },
+        });
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+        );
+
+        assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn render_scheduler_coalesces_frames_and_respects_sync_output() {
+        assert_eq!(render_wait(false, false, false, Duration::ZERO), None);
+        assert_eq!(
+            render_wait(true, false, false, Duration::ZERO),
+            Some(MIN_RENDER_INTERVAL)
+        );
+        assert_eq!(
+            render_wait(true, false, false, MIN_RENDER_INTERVAL),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(render_wait(true, false, true, MIN_RENDER_INTERVAL), None);
+        assert_eq!(
+            render_wait(true, true, true, MIN_RENDER_INTERVAL),
+            Some(Duration::ZERO)
+        );
     }
 
     /// Dựng một App tối thiểu với đúng 1 pane để test layout.
@@ -306,7 +388,6 @@ mod tests {
                     title: String::new(),
                     pending: None,
                     input: InputLine::default(),
-                    input_draw_target: None,
                 },
             )]),
             tabs: vec![Tab {
@@ -372,14 +453,8 @@ mod tests {
         suggest_accept(&mut app);
         assert!(app.suggest.is_none(), "accept phải đóng popup");
         let dismissed = app.suggest_dismissed_for.clone().expect("đã đặt dismissed");
-        let target = app.panes[&PaneId(0)]
-            .input_draw_target
-            .as_ref()
-            .expect("phải hoãn redraw tới trạng thái cuối");
-        assert_eq!(target.buffer, dismissed);
-        assert_eq!(target.cursor, dismissed.chars().count());
 
-        // Shell báo đúng trạng thái cuối → bỏ hoãn redraw và không mở lại popup.
+        // Shell báo buffer đã accept → popup vẫn không được tự mở lại.
         handle_osc(
             &mut app,
             PaneId(0),
@@ -389,7 +464,6 @@ mod tests {
                 cwd: "/x".into(),
             },
         );
-        assert!(app.panes[&PaneId(0)].input_draw_target.is_none());
         assert!(app.suggest.is_none(), "không được tự mở lại cho lệnh vừa accept");
 
         // Gõ khác đi → dismissed hết hiệu lực → popup mở lại.
@@ -413,9 +487,9 @@ mod tests {
     fn shell_integration_env_only_for_zsh() {
         let integ = ShellIntegration::setup().unwrap();
         // zsh → có ZDOTDIR; bash → rỗng (chưa hỗ trợ)
-        let env = integ.env_for("/bin/zsh");
+        let env = integ.env_for("/bin/zsh", 0);
         assert!(!env.is_empty());
-        assert!(integ.env_for("/bin/bash").is_empty());
+        assert!(integ.env_for("/bin/bash", 0).is_empty());
         // .zshenv được ghi ra thư mục ZDOTDIR
         let zdot = &env.iter().find(|(k, _)| k == "ZDOTDIR").unwrap().1;
         assert!(std::path::Path::new(zdot).join(".zshenv").exists());
@@ -484,22 +558,31 @@ mod tests {
         // Cài hook zle TRỄ (trong precmd, sau khi zle sẵn sàng) và ghi /dev/tty.
         let hooks = "autoload -Uz add-zsh-hook add-zle-hook-widget\n\
             _tc_buf() { printf '\\e]1337;TermulBuf=%d;%s;%s\\a' \"$CURSOR\" \"$(print -rn -- \"$BUFFER\" | base64 | tr -d '\\n')\" \"$(print -rn -- \"$PWD\" | base64 | tr -d '\\n')\" >/dev/tty; }\n\
-            _tc_init() { add-zsh-hook -d precmd _tc_init; add-zle-hook-widget line-pre-redraw _tc_buf; }\n\
+            _tc_edit() { local cursor buffer; IFS=$'\\t' read -r cursor buffer <\"$TERMUL_EDIT_FILE\"; printf '\\e[?2026h' >/dev/tty; BUFFER=\"$buffer\"; CURSOR=\"$cursor\"; POSTDISPLAY=''; zle redisplay; printf '\\e[?2026l' >/dev/tty; }\n\
+            _tc_init() { add-zsh-hook -d precmd _tc_init; add-zle-hook-widget line-pre-redraw _tc_buf; zle -N _tc_edit; bindkey -M emacs $'\\e[99~' _tc_edit; bindkey -M viins $'\\e[99~' _tc_edit; }\n\
             add-zsh-hook precmd _tc_init\n";
         std::fs::write(dir.join(".zshenv"), hooks).unwrap();
 
         let (tx, rx) = mpsc::channel();
-        let env = vec![("ZDOTDIR".to_string(), dir.to_string_lossy().to_string())];
+        let env = vec![
+            ("ZDOTDIR".to_string(), dir.to_string_lossy().to_string()),
+            (
+                "TERMUL_EDIT_FILE".to_string(),
+                dir.join("edit").to_string_lossy().to_string(),
+            ),
+        ];
         let mut pty = PtySession::spawn(PaneId(0), 24, 80, "/bin/zsh", &env, tx).unwrap();
         std::thread::sleep(Duration::from_millis(600));
-        pty.write(b"ls"); // gõ 2 ký tự, KHÔNG Enter
+        pty.write(b"abcdefgh"); // gõ một dòng dài, KHÔNG Enter
 
         let mut scanner = OscScanner::default();
         let mut events = Vec::new();
-        let mut saw_ls = false;
+        let mut raw_output = Vec::new();
+        let mut saw_initial = false;
         let deadline = Instant::now() + Duration::from_secs(8);
-        while Instant::now() < deadline && !saw_ls {
+        while Instant::now() < deadline && !saw_initial {
             if let Ok(AppEvent::PtyData(_, bytes)) = rx.recv_timeout(Duration::from_millis(200)) {
+                raw_output.extend_from_slice(&bytes);
                 scanner.scan(&bytes, &mut events);
                 for ev in events.drain(..) {
                     if let OscEvent::BufferUpdate {
@@ -507,17 +590,67 @@ mod tests {
                         buffer,
                         cwd,
                     } = ev
-                        && buffer == "ls"
+                        && buffer == "abcdefgh"
                     {
-                        assert_eq!(cursor, 2);
+                        assert_eq!(cursor, 8);
                         assert!(!cwd.is_empty());
-                        saw_ls = true;
+                        saw_initial = true;
                     }
                 }
             }
         }
+        assert!(saw_initial, "không nhận BufferUpdate từ zsh");
+
+        // Widget termul cập nhật buffer và cursor nguyên tử trong một lần.
+        std::fs::write(dir.join("edit"), "1\txy\n").unwrap();
+        let edit_output_start = raw_output.len();
+        pty.write(b"\x1b[99~");
+        let mut saw_edit = false;
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline && !saw_edit {
+            if let Ok(AppEvent::PtyData(_, bytes)) = rx.recv_timeout(Duration::from_millis(200)) {
+                raw_output.extend_from_slice(&bytes);
+                scanner.scan(&bytes, &mut events);
+                for ev in events.drain(..) {
+                    if let OscEvent::BufferUpdate { cursor, buffer, .. } = ev
+                        && buffer == "xy"
+                        && cursor == 1
+                    {
+                        saw_edit = true;
+                    }
+                }
+            }
+        }
+        while let Ok(AppEvent::PtyData(_, bytes)) =
+            rx.recv_timeout(Duration::from_millis(200))
+        {
+            raw_output.extend_from_slice(&bytes);
+        }
+        let edit_output = &raw_output[edit_output_start..];
+        let sync_start = edit_output
+            .windows(b"\x1b[?2026h".len())
+            .position(|bytes| bytes == b"\x1b[?2026h")
+            .expect("edit phải bật synchronized output");
+        let sync_end = edit_output
+            .windows(b"\x1b[?2026l".len())
+            .position(|bytes| bytes == b"\x1b[?2026l")
+            .expect("edit phải tắt synchronized output");
+        assert!(sync_start < sync_end);
+
+        let mut rendered = TermGrid::new(24, 80, DEFAULT_SCROLLBACK_LIMIT_BYTES);
+        rendered.process(&raw_output);
+        let contents = rendered.screen().contents();
+        assert!(contents.contains("% xy"), "không vẽ buffer mới: {contents:?}");
+        assert!(
+            !contents.contains("xycdefgh"),
+            "còn ghost text của buffer cũ: {contents:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(saw_ls, "không nhận BufferUpdate 'ls' từ zsh");
+        assert!(
+            saw_edit,
+            "zsh không áp dụng edit selection: {}",
+            String::from_utf8_lossy(&raw_output)
+        );
     }
 
     /// Kiểm chứng pipeline lõi mà không cần tty:

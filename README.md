@@ -17,7 +17,7 @@ Triết lý thiết kế:
 | **Tab** | Tabbar ở trên cùng (tab active nền tím mauve), tạo/đổi tên/đóng tab, chuột phải mở menu |
 | **Command memory** | Mỗi lệnh chạy xong được ghi vào SQLite kèm `cwd`, exit code, thời lượng — qua shell integration OSC |
 | **Autocomplete popup** | Gõ tới đâu gợi ý tới đó; khớp kiểu *contains*, xếp hạng theo **frecency** (tần suất × độ mới × ưu tiên cùng thư mục) |
-| **History palette** | Bảng tìm kiếm mờ (fuzzy) toàn bộ lịch sử, mở bằng `Ctrl+B r` |
+| **History palette** | Bảng tìm kiếm mờ (fuzzy) toàn bộ lịch sử, mở bằng `Ctrl+Backtick r` |
 
 ---
 
@@ -44,7 +44,7 @@ Binary sau khi build nằm ở `target/release/termul`.
 
 - Mỗi pane là một **PTY** spawn shell của bạn (`$SHELL`), giả lập VT và quản lý scrollback/reflow bằng `libghostty-vt`, render bằng `ratatui` + `crossterm`.
 - Với zsh, termul nạp **shell integration** tự động qua một `ZDOTDIR` tạm (không đụng cấu hình gốc của bạn). Integration phát các chuỗi OSC báo: lệnh bắt đầu chạy, exit code, và **nội dung dòng đang gõ** — nhờ đó popup gợi ý hiện được ngay lúc gõ.
-- Trong pane termul, gợi ý inline của **zsh-autosuggestions** được tắt để tránh chồng gợi ý (đặt `_ZSH_AUTOSUGGEST_DISABLED=1`).
+- **zsh-autosuggestions** vẫn có thể hoạt động cùng popup của termul; khi accept popup, termul xóa `POSTDISPLAY` cũ để không còn ghost suffix.
 - Lịch sử lưu ở `<data_dir>/termul/history.db`:
   - macOS: `~/Library/Application Support/termul/history.db`
   - Linux: `~/.local/share/termul/history.db`

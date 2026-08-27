@@ -119,7 +119,7 @@ pub(crate) fn spawn_pane(app: &mut App) -> Option<PaneId> {
     let id = PaneId(app.next_pane);
     let cwd = std::env::current_dir().ok()?.to_string_lossy().into_owned();
     // Kích thước khởi tạo tuỳ ý — recompute() sẽ resize lại ngay.
-    let env = app.integ.env_for(&app.shell);
+    let env = app.integ.env_for(&app.shell, id.0);
     let pty = PtySession::spawn(id, 24, 80, &app.shell, &env, app.tx.clone()).ok()?;
     app.next_pane += 1;
     app.panes.insert(
@@ -138,7 +138,6 @@ pub(crate) fn spawn_pane(app: &mut App) -> Option<PaneId> {
             title: String::new(),
             pending: None,
             input: InputLine::default(),
-            input_draw_target: None,
         },
     );
     Some(id)

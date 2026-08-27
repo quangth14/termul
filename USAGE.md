@@ -21,7 +21,7 @@ Bạn **không cần cấu hình gì thủ công**. Khi pane dùng **zsh**, term
 1. Tạo một `ZDOTDIR` tạm và nạp integration, rồi **khôi phục lại** `ZDOTDIR` gốc để `.zshrc`/`.zprofile` của bạn vẫn nạp bình thường.
 2. Cài hook `preexec`/`precmd` để ghi lệnh vào lịch sử (kèm thư mục, exit code, thời lượng).
 3. Báo **dòng đang gõ** theo từng phím để hiện popup gợi ý.
-4. **Tắt gợi ý inline** của `zsh-autosuggestions` *chỉ trong pane termul* (đặt `_ZSH_AUTOSUGGEST_DISABLED=1`) để không bị hai gợi ý chồng nhau. `Ctrl+R` của zsh vẫn dùng bình thường.
+4. Cho phép `zsh-autosuggestions` tiếp tục hoạt động; khi accept popup, termul xóa `POSTDISPLAY` cũ để không còn ghost suffix. `Ctrl+R` của zsh vẫn dùng bình thường.
 
 Cấu hình gốc của bạn (plugin, theme, alias…) không bị thay đổi.
 
@@ -53,16 +53,16 @@ Menu chuột phải điều hướng bằng `↑`/`↓` và `Enter`, đóng bằ
 
 ## 4. Phím tắt
 
-termul dùng **prefix** kiểu tmux: nhấn `Ctrl+B` trước, rồi nhấn phím lệnh.
+termul dùng **prefix** kiểu tmux: nhấn `Ctrl+Backtick` trước, rồi nhấn phím lệnh.
 
 ### Toàn cục
 
 | Phím     | Chức năng                                     |
 | -------- | --------------------------------------------- |
-| `Ctrl+B` | Vào **prefix mode** (chờ phím lệnh tiếp theo) |
+| `Ctrl+Backtick` | Vào **prefix mode** (chờ phím lệnh tiếp theo) |
 | `Ctrl+Q` | Thoát termul ngay lập tức                     |
 
-### Pane (sau `Ctrl+B`)
+### Pane (sau `Ctrl+Backtick`)
 
 | Phím            | Chức năng                         |
 | --------------- | --------------------------------- |
@@ -73,7 +73,7 @@ termul dùng **prefix** kiểu tmux: nhấn `Ctrl+B` trước, rồi nhấn phí
 
 > Đóng pane **cuối cùng** của toàn app sẽ hiện hộp **xác nhận** thay vì thoát thẳng.
 
-### Tab (sau `Ctrl+B`)
+### Tab (sau `Ctrl+Backtick`)
 
 | Phím | Chức năng            |
 | ---- | -------------------- |
@@ -83,7 +83,7 @@ termul dùng **prefix** kiểu tmux: nhấn `Ctrl+B` trước, rồi nhấn phí
 | `,`  | Đổi tên tab hiện tại |
 | `w`  | Đóng tab hiện tại    |
 
-### Khác (sau `Ctrl+B`)
+### Khác (sau `Ctrl+Backtick`)
 
 | Phím | Chức năng                                         |
 | ---- | ------------------------------------------------- |
@@ -143,7 +143,7 @@ Pattern cấu hình được áp dụng bổ sung bên cạnh `.gitignore`. Patt
 
 ***
 
-## 7. History palette (`Ctrl+B r`)
+## 7. History palette (`Ctrl+Backtick r`)
 
 Bảng tìm kiếm mờ toàn bộ lịch sử lệnh:
 

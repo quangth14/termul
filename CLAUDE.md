@@ -32,7 +32,7 @@ Không có linter/CI riêng; dùng `cargo clippy` và `cargo fmt` theo mặc đ�
 palette  >  rename  >  confirm  >  menu  >  popup gợi ý (suggest)  >  pane
 ```
 
-Phím tắt dùng **prefix kiểu tmux**: nhấn prefix (mặc định `Ctrl+B`) đặt `prefix_active = true`; phím kế tiếp đi vào `handle_prefix`. Khi không có modal và không ở prefix mode, phím được `encode_key` và ghi thẳng vào PTY của pane focus. Tất cả keybind đọc từ `app.cfg.keys` (không hardcode) qua `key_matches`.
+Phím tắt dùng **prefix kiểu tmux**: nhấn prefix (mặc định `Ctrl+Backtick`) đặt `prefix_active = true`; phím kế tiếp đi vào `handle_prefix`. Khi không có modal và không ở prefix mode, phím được `encode_key` và ghi thẳng vào PTY của pane focus. Tất cả keybind đọc từ `app.cfg.keys` (không hardcode) qua `key_matches`.
 
 ### Shell integration → command memory → gợi ý
 

@@ -17,7 +17,7 @@ pub(crate) type KeyBind = (KeyModifiers, KeyCode);
 /// Bộ phím tắt (đã phân giải sẵn để so khớp nhanh mỗi keystroke).
 #[derive(Clone, Copy)]
 pub(crate) struct Keymap {
-    pub(crate) prefix: KeyBind,       // vào prefix mode (mặc định Ctrl+B)
+    pub(crate) prefix: KeyBind,       // vào prefix mode (mặc định Ctrl+`)
     pub(crate) quit: KeyBind,         // thoát nhanh (mặc định Ctrl+Q)
     pub(crate) split_right: char,     // '%'
     pub(crate) split_down: char,      // '"'
@@ -62,7 +62,7 @@ impl Default for Config {
             mention_exclude: Vec::new(),
             scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
             keys: Keymap {
-                prefix: (KeyModifiers::CONTROL, KeyCode::Char('b')),
+                prefix: (KeyModifiers::CONTROL, KeyCode::Char('`')),
                 quit: (KeyModifiers::CONTROL, KeyCode::Char('q')),
                 split_right: 'd',
                 split_down: 's',
@@ -218,7 +218,7 @@ fn parse_color(s: &str) -> Option<Color> {
     Some(Color::Rgb(r, g, b))
 }
 
-/// Parse tổ hợp phím như `ctrl+b`, `alt+x`, hay một ký tự đơn `q`.
+/// Parse tổ hợp phím như `ctrl+\``, `alt+x`, hay một ký tự đơn `q`.
 fn parse_bind(s: &str) -> Option<KeyBind> {
     let parts: Vec<&str> = s.split('+').map(|p| p.trim()).collect();
     let (mod_parts, key_part) = parts.split_at(parts.len() - 1);
@@ -273,8 +273,8 @@ mod tests {
     #[test]
     fn parses_keybind() {
         assert_eq!(
-            parse_bind("ctrl+b"),
-            Some((KeyModifiers::CONTROL, KeyCode::Char('b')))
+            parse_bind("ctrl+`"),
+            Some((KeyModifiers::CONTROL, KeyCode::Char('`')))
         );
         assert_eq!(parse_bind("q"), Some((KeyModifiers::NONE, KeyCode::Char('q'))));
         assert_eq!(
@@ -282,6 +282,14 @@ mod tests {
             Some((KeyModifiers::ALT, KeyCode::Enter))
         );
         assert_eq!(parse_bind("bogus+b"), None);
+    }
+
+    #[test]
+    fn default_prefix_is_ctrl_backtick() {
+        assert_eq!(
+            Config::default().keys.prefix,
+            (KeyModifiers::CONTROL, KeyCode::Char('`'))
+        );
     }
 
     #[test]
