@@ -11,6 +11,7 @@ use std::ops::Range;
 use std::process::{Command, Stdio};
 
 use libghostty_vt::unicode;
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::*;
 use crate::config::key_matches;
@@ -602,19 +603,26 @@ pub(crate) fn handle_mouse(app: &mut App, me: MouseEvent) {
             if app.dragging.is_some() {
                 app.dragging = None;
             } else if let Some(selection) = app.selection {
-                if let Some(point) = pane_point(app, selection.pane, col, row, true) {
-                    app.selection = Some(PaneSelection {
-                        range: crate::term::GridSelection {
-                            end: point,
-                            ..selection.range
-                        },
-                        ..selection
-                    });
+                let point = pane_point(app, selection.pane, col, row, true);
+                let range = point.map(|end| crate::term::GridSelection {
+                    end,
+                    ..selection.range
+                });
+
+                if let Some(range) = range
+                    && range.anchor == range.end
+                    && !me.modifiers.contains(KeyModifiers::SHIFT)
+                    && move_input_cursor_to(app, selection.pane, range.end)
+                {
+                    app.selection = None;
+                    return;
                 }
 
-                if let Some(pane) = app.panes.get(&selection.pane) {
-                    let text = pane.grid.screen().selected_text(selection.range);
-                    if text.trim().is_empty() {
+                if let Some(range) = range {
+                    app.selection = Some(PaneSelection { range, ..selection });
+                    if let Some(pane) = app.panes.get(&selection.pane)
+                        && pane.grid.screen().selected_text(range).trim().is_empty()
+                    {
                         app.selection = None;
                     }
                 }
@@ -687,6 +695,97 @@ pub(crate) fn divider_at(app: &App, col: u16, row: u16) -> Option<DragState> {
             dir: d.dir,
             bounds: d.bounds,
         })
+}
+
+/// Di chuyển con trỏ ZLE tới ô được click bằng các phím trái/phải.
+/// Chỉ hoạt động khi viewport đang ở đáy và buffer là một dòng logic.
+#[allow(dead_code)]
+fn move_input_cursor_to(app: &mut App, pid: PaneId, click: GridPoint) -> bool {
+    let Some(pane) = app.panes.get_mut(&pid) else {
+        return false;
+    };
+    if pane.grid.scrollback() != 0 {
+        return false;
+    }
+
+    let screen = pane.grid.screen();
+    let target = click_cursor_index(
+        &pane.input.buffer,
+        pane.input.cursor,
+        screen.cursor_position(),
+        click,
+        screen.size().1,
+    );
+    let Some(target) = target else {
+        return false;
+    };
+
+    let current = pane.input.cursor.min(pane.input.buffer.chars().count());
+    let (code, count) = if target < current {
+        (KeyCode::Left, current - target)
+    } else {
+        (KeyCode::Right, target - current)
+    };
+    if count == 0 {
+        return true;
+    }
+
+    let mut output = Vec::with_capacity(count * 3);
+    for _ in 0..count {
+        if let Some(bytes) = pane
+            .grid
+            .encode_key(KeyEvent::new(code, KeyModifiers::NONE))
+        {
+            output.extend_from_slice(&bytes);
+        }
+    }
+    if output.is_empty() {
+        return false;
+    }
+    pane.pty.write(&output);
+    true
+}
+
+/// Ánh xạ ô click vào chỉ số ký tự gần nhất của buffer một dòng.
+/// Vị trí đầu buffer được suy ra ngược từ cursor ZLE đang hiển thị.
+fn click_cursor_index(
+    buffer: &str,
+    current_index: usize,
+    cursor: (u16, u16),
+    click: GridPoint,
+    cols: u16,
+) -> Option<usize> {
+    if buffer.is_empty() || cols == 0 || buffer.contains(['\n', '\t']) {
+        return None;
+    }
+
+    let chars: Vec<char> = buffer.chars().collect();
+    let current_index = current_index.min(chars.len());
+    let mut boundaries = Vec::with_capacity(chars.len() + 1);
+    boundaries.push(0_i64);
+    for character in chars {
+        let width = UnicodeWidthChar::width(character).unwrap_or(0) as i64;
+        boundaries.push(boundaries.last().copied().unwrap_or(0) + width);
+    }
+
+    let cols = i64::from(cols);
+    let cursor_linear = i64::from(cursor.0) * cols + i64::from(cursor.1);
+    let start = cursor_linear - boundaries[current_index];
+    let end = start + boundaries.last().copied().unwrap_or(0);
+    let first_row = start.div_euclid(cols).max(0);
+    let last_row = end.div_euclid(cols);
+    let click_row = i64::from(click.row);
+    if click_row < first_row || click_row > last_row {
+        return None;
+    }
+
+    // So sánh theo nửa ô để click trên ký tự wide chọn đúng nửa trái/phải.
+    let click_center = (click_row * cols + i64::from(click.col)) * 2 + 1;
+    boundaries
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, offset)| ((start + **offset) * 2 - click_center).abs())
+        .map(|(index, _)| index)
 }
 
 pub(crate) fn pane_at(app: &App, col: u16, row: u16) -> Option<PaneId> {
