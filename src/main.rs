@@ -726,11 +726,22 @@ mod tests {
         grid.process(b"\x1b[?1000h\x1b[?1006h");
         let me = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 1,
-            row: 1,
+            column: 12,
+            row: 10,
             modifiers: KeyModifiers::NONE,
         };
-        assert_eq!(grid.encode_mouse(me, inner), Some(b"\x1b[<0;1;1M".to_vec()));
+        assert_eq!(
+            grid.encode_mouse(me, inner),
+            Some(b"\x1b[<0;12;10M".to_vec())
+        );
+
+        // Crossterm không có pixel chính xác: yêu cầu 1016 phải hạ xuống SGR
+        // theo ô thay vì chia sai tọa độ cell cho kích thước pixel.
+        grid.process(b"\x1b[?1016h");
+        assert_eq!(
+            grid.encode_mouse(me, inner),
+            Some(b"\x1b[<0;12;10M".to_vec())
+        );
         let me = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 0,

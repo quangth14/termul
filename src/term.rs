@@ -534,12 +534,23 @@ impl TermGrid {
                 y: f32::from(event.row - inner.y),
             });
         self.mouse_encoder
-            .set_options_from_terminal(&self.terminal)
+            .set_options_from_terminal(&self.terminal);
+        // Crossterm chỉ cung cấp vị trí theo ô, trong khi Ghostty nhận vị trí
+        // surface-space. Dùng hình học 1×1 để không chia tọa độ thêm lần nữa.
+        // Nếu child yêu cầu SGR-pixels, hạ xuống SGR vì không có pixel chính xác.
+        if self
+            .terminal
+            .mode(Mode::SGR_PIXELS_MOUSE)
+            .unwrap_or(false)
+        {
+            self.mouse_encoder.set_format(mouse::Format::Sgr);
+        }
+        self.mouse_encoder
             .set_size(mouse::EncoderSize {
                 screen_width: u32::from(inner.width),
                 screen_height: u32::from(inner.height),
-                cell_width: self.cell_size.width.max(1),
-                cell_height: self.cell_size.height.max(1),
+                cell_width: 1,
+                cell_height: 1,
                 padding_top: 0,
                 padding_bottom: 0,
                 padding_right: 0,
