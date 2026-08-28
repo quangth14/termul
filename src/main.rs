@@ -355,6 +355,62 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_multiline_selection_from_current_zle_input() {
+        let mut app = one_pane_app();
+        let pid = PaneId(0);
+        app.panes
+            .get_mut(&pid)
+            .unwrap()
+            .grid
+            .process(b"$ apksigner sign \\\r\n  --ks release.jks \\\r\n  --out app.apk");
+        set_input(
+            &mut app,
+            "apksigner sign \\\n  --ks release.jks \\\n  --out app.apk",
+        );
+        app.selection = Some(PaneSelection {
+            pane: pid,
+            range: crate::term::GridSelection {
+                anchor: GridPoint { row: 0, col: 2 },
+                end: GridPoint { row: 2, col: 14 },
+            },
+        });
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+
+        assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn click_without_drag_moves_zle_cursor_inside_multiline_input() {
+        let mut app = one_pane_app();
+        let pid = PaneId(0);
+        app.panes
+            .get_mut(&pid)
+            .unwrap()
+            .grid
+            .process(b"$ ab \\\r\n  cd");
+        set_input(&mut app, "ab \\\n  cd");
+        let screen = app.screen;
+        recompute(&mut app, screen);
+        let inner = app.inner_areas[&pid];
+        let click = |kind| MouseEvent {
+            kind,
+            column: inner.x + 3,
+            row: inner.y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left)));
+        assert!(app.selection.is_some());
+        handle_mouse(&mut app, click(MouseEventKind::Up(MouseButton::Left)));
+
+        assert!(
+            app.selection.is_none(),
+            "click không kéo phải đặt con trỏ, không để selection"
+        );
+    }
+
+    #[test]
     fn render_scheduler_coalesces_frames_and_respects_sync_output() {
         assert_eq!(render_wait(false, false, false, Duration::ZERO), None);
         assert_eq!(
@@ -558,7 +614,7 @@ mod tests {
         // Cài hook zle TRỄ (trong precmd, sau khi zle sẵn sàng) và ghi /dev/tty.
         let hooks = "autoload -Uz add-zsh-hook add-zle-hook-widget\n\
             _tc_buf() { printf '\\e]1337;TermulBuf=%d;%s;%s\\a' \"$CURSOR\" \"$(print -rn -- \"$BUFFER\" | base64 | tr -d '\\n')\" \"$(print -rn -- \"$PWD\" | base64 | tr -d '\\n')\" >/dev/tty; }\n\
-            _tc_edit() { local cursor buffer; IFS=$'\\t' read -r cursor buffer <\"$TERMUL_EDIT_FILE\"; printf '\\e[?2026h' >/dev/tty; BUFFER=\"$buffer\"; CURSOR=\"$cursor\"; POSTDISPLAY=''; zle redisplay; printf '\\e[?2026l' >/dev/tty; }\n\
+            _tc_edit() { local cursor buffer; { IFS= read -r cursor; IFS= read -r -d '' buffer; } <\"$TERMUL_EDIT_FILE\"; printf '\\e[?2026h' >/dev/tty; BUFFER=\"$buffer\"; CURSOR=\"$cursor\"; POSTDISPLAY=''; zle redisplay; printf '\\e[?2026l' >/dev/tty; }\n\
             _tc_init() { add-zsh-hook -d precmd _tc_init; add-zle-hook-widget line-pre-redraw _tc_buf; zle -N _tc_edit; bindkey -M emacs $'\\e[99~' _tc_edit; bindkey -M viins $'\\e[99~' _tc_edit; }\n\
             add-zsh-hook precmd _tc_init\n";
         std::fs::write(dir.join(".zshenv"), hooks).unwrap();
@@ -602,7 +658,7 @@ mod tests {
         assert!(saw_initial, "không nhận BufferUpdate từ zsh");
 
         // Widget termul cập nhật buffer và cursor nguyên tử trong một lần.
-        std::fs::write(dir.join("edit"), "1\txy\n").unwrap();
+        std::fs::write(dir.join("edit"), "1\nxy").unwrap();
         let edit_output_start = raw_output.len();
         pty.write(b"\x1b[99~");
         let mut saw_edit = false;

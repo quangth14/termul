@@ -11,7 +11,6 @@ use std::ops::Range;
 use std::process::{Command, Stdio};
 
 use libghostty_vt::unicode;
-use unicode_width::UnicodeWidthChar;
 
 use crate::app::*;
 use crate::config::key_matches;
@@ -23,7 +22,7 @@ use crate::palette::*;
 use crate::rename::*;
 use crate::session::*;
 use crate::suggest::*;
-use crate::term::{ClipboardTarget, GridPoint, GridSelection};
+use crate::term::{ClipboardTarget, GridPoint, GridSelection, TermScreen};
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if key.kind == KeyEventKind::Release {
@@ -258,22 +257,34 @@ fn input_selection_edit(pane: &Pane, selection: GridSelection) -> Option<InputSe
         || pane.grid.scrollback() != 0
         || pane.grid.screen().hide_cursor()
         || pane.input.buffer.is_empty()
-        || pane.input.buffer.contains(['\n', '\r', '\t'])
+        || pane.input.buffer.contains(['\r', '\t'])
     {
         return None;
     }
 
-    let char_range = input_selection_char_range(
+    let screen = pane.grid.screen();
+    let cols = screen.size().1;
+    let (char_range, cell_range) = input_selection_char_range(
         &pane.input.buffer,
         pane.input.cursor,
-        pane.grid.screen().cursor_position(),
-        pane.grid.screen().size().1,
+        screen.cursor_position(),
+        cols,
         selection,
+        |line, row_end| locate_first_input_line(screen, line, row_end),
     )?;
     let start_byte = char_byte_offset(&pane.input.buffer, char_range.start)?;
     let end_byte = char_byte_offset(&pane.input.buffer, char_range.end)?;
     let removed = pane.input.buffer.get(start_byte..end_byte)?.to_string();
-    if removed.is_empty() {
+    if removed.is_empty() || cell_range.start < 0 {
+        return None;
+    }
+    // Đối chiếu text đang hiển thị trên các ô sẽ bị xóa với buffer: vị trí các
+    // dòng là suy luận (prompt, RPROMPT, dòng đầu) nên lệch thì thà không xóa.
+    let shown = screen.selected_text(GridSelection {
+        anchor: cell_point(cell_range.start, cols),
+        end: cell_point(cell_range.end - 1, cols),
+    });
+    if strip_whitespace(&shown) != strip_whitespace(&removed) {
         return None;
     }
     let replacement = format!(
@@ -288,37 +299,112 @@ fn input_selection_edit(pane: &Pane, selection: GridSelection) -> Option<InputSe
     })
 }
 
-/// Đổi selection cell-inclusive thành khoảng ký tự ZLE khi điểm bắt đầu nằm
-/// trong buffer đang hiển thị. Biên được ghim theo grapheme.
+fn cell_point(cell: i64, cols: u16) -> GridPoint {
+    GridPoint {
+        row: (cell / i64::from(cols)) as u16,
+        col: (cell % i64::from(cols)) as u16,
+    }
+}
+
+fn strip_whitespace(value: &str) -> String {
+    value.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Biên grapheme của một dòng: (số ký tự đã đi qua, số ô đã chiếm), bắt đầu (0, 0).
+fn grapheme_boundaries(chars: &[char]) -> Option<Vec<(usize, i64)>> {
+    let mut boundaries = vec![(0, 0_i64)];
+    let mut index = 0;
+    let mut cells = 0_i64;
+    while index < chars.len() {
+        let (consumed, width) = unicode::grapheme_width(&chars[index..]);
+        if consumed == 0 {
+            return None;
+        }
+        index += consumed;
+        cells += i64::from(width);
+        boundaries.push((index, cells));
+    }
+    Some(boundaries)
+}
+
+/// Bố cục buffer ZLE trên màn hình: biên grapheme (chỉ số ký tự, ô linear
+/// `row * cols + col`) tăng dần của các dòng đã xác định được vị trí. Buffer có
+/// thể nhiều dòng (`\n`): dòng chứa con trỏ neo theo vị trí con trỏ; các dòng
+/// sau bắt đầu ở cột 0 của hàng kế (zsh xuống hàng "eager": dòng vừa đầy hàng
+/// thì `\n` tạo thêm một hàng trống); các dòng trước suy ngược từ số hàng chiếm;
+/// riêng dòng đầu nằm sau prompt nên nhờ `locate_first(text, ô đầu hàng kế sau
+/// dòng đầu)` tìm trên màn hình — không tìm được thì bỏ dòng đầu khỏi bố cục.
+fn input_layout(
+    buffer: &str,
+    current_cursor: usize,
+    cursor: (u16, u16),
+    cols: u16,
+    locate_first: impl FnOnce(&str, i64) -> Option<i64>,
+) -> Option<Vec<(usize, i64)>> {
+    if cols == 0 || buffer.contains(['\r', '\t']) {
+        return None;
+    }
+    let cols = i64::from(cols);
+    // Mỗi dòng logic: (text, chỉ số ký tự bắt đầu, biên grapheme tính từ đầu dòng).
+    let mut lines = Vec::new();
+    let mut char_start = 0;
+    for line in buffer.split('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        lines.push((line, char_start, grapheme_boundaries(&chars)?));
+        char_start += chars.len() + 1;
+    }
+    let width = |line: usize| width_cells(&lines[line].2);
+    let cursor_line = lines
+        .iter()
+        .position(|(_, start, boundaries)| current_cursor <= start + width_chars(boundaries))?;
+    let cursor_offset = lines[cursor_line].2.iter().find_map(|(index, offset)| {
+        (lines[cursor_line].1 + index == current_cursor).then_some(*offset)
+    })?;
+
+    let mut starts = vec![None; lines.len()];
+    starts[cursor_line] = Some(i64::from(cursor.0) * cols + i64::from(cursor.1) - cursor_offset);
+    for line in cursor_line + 1..lines.len() {
+        let end = starts[line - 1]? + width(line - 1);
+        starts[line] = Some((end / cols + 1) * cols);
+    }
+    for line in (1..cursor_line).rev() {
+        let next_row = starts[line + 1]? / cols;
+        starts[line] = Some((next_row - 1 - width(line) / cols) * cols);
+    }
+    if cursor_line > 0 {
+        starts[0] = locate_first(lines[0].0, starts[1]?);
+    }
+
+    Some(
+        lines
+            .iter()
+            .zip(&starts)
+            .filter_map(|((_, char_start, boundaries), start)| {
+                start.map(|start| {
+                    boundaries
+                        .iter()
+                        .map(move |(index, offset)| (char_start + index, start + offset))
+                })
+            })
+            .flatten()
+            .collect(),
+    )
+}
+
+/// Đổi selection cell-inclusive thành khoảng ký tự ZLE cùng khoảng ô linear
+/// tương ứng theo bố cục `input_layout`. Biên được ghim theo grapheme.
 fn input_selection_char_range(
     buffer: &str,
     current_cursor: usize,
     cursor: (u16, u16),
     cols: u16,
     selection: GridSelection,
-) -> Option<Range<usize>> {
-    if cols == 0 || buffer.contains(['\n', '\r', '\t']) {
-        return None;
-    }
-    let chars: Vec<char> = buffer.chars().collect();
-    let mut boundaries = vec![(0_usize, 0_i64)];
-    let mut char_index = 0;
-    let mut cells = 0_i64;
-    while char_index < chars.len() {
-        let (consumed, width) = unicode::grapheme_width(&chars[char_index..]);
-        if consumed == 0 {
-            return None;
-        }
-        char_index += consumed;
-        cells += i64::from(width);
-        boundaries.push((char_index, cells));
-    }
-    let cursor_offset = boundaries
-        .iter()
-        .find_map(|(index, offset)| (*index == current_cursor).then_some(*offset))?;
+    locate_first: impl FnOnce(&str, i64) -> Option<i64>,
+) -> Option<(Range<usize>, Range<i64>)> {
+    let boundaries = input_layout(buffer, current_cursor, cursor, cols, locate_first)?;
     let cols = i64::from(cols);
-    let buffer_start = i64::from(cursor.0) * cols + i64::from(cursor.1) - cursor_offset;
-    let buffer_end = buffer_start + cells;
+    let buffer_start = boundaries.first()?.1;
+    let buffer_end = boundaries.last()?.1;
     let (start, end) = if selection.anchor <= selection.end {
         (selection.anchor, selection.end)
     } else {
@@ -335,16 +421,56 @@ fn input_selection_char_range(
     if selected_start >= selected_end {
         return None;
     }
-    let relative_start = selected_start - buffer_start;
-    let relative_end = selected_end - buffer_start;
-    let start_index = boundaries
+    let (start_index, start_cell) = *boundaries
         .iter()
         .rev()
-        .find_map(|(index, offset)| (*offset <= relative_start).then_some(*index))?;
-    let end_index = boundaries
-        .iter()
-        .find_map(|(index, offset)| (*offset >= relative_end).then_some(*index))?;
-    (start_index < end_index).then_some(start_index..end_index)
+        .find(|(_, cell)| *cell <= selected_start)?;
+    let (end_index, end_cell) = *boundaries.iter().find(|(_, cell)| *cell >= selected_end)?;
+    (start_index < end_index).then_some((start_index..end_index, start_cell..end_cell))
+}
+
+fn width_chars(boundaries: &[(usize, i64)]) -> usize {
+    boundaries.last().map_or(0, |last| last.0)
+}
+
+/// Tìm ô linear bắt đầu dòng đầu của buffer trên màn hình. Dòng đầu kết thúc
+/// trong hàng ngay trước `row_end` (ô đầu hàng kế); thử từng vị trí khả dĩ, khớp
+/// text từng ô và ô ngay sau phải trống (để không bắt nhầm text trong prompt).
+fn locate_first_input_line(screen: &TermScreen, line: &str, row_end: i64) -> Option<i64> {
+    let cols = i64::from(screen.size().1);
+    let chars: Vec<char> = line.chars().collect();
+    let boundaries = grapheme_boundaries(&chars)?;
+    let graphemes: Vec<(String, i64)> = boundaries
+        .windows(2)
+        .map(|pair| {
+            (
+                chars[pair[0].0..pair[1].0].iter().collect(),
+                pair[1].1 - pair[0].1,
+            )
+        })
+        .collect();
+    let width = width_cells(&boundaries);
+    if width == 0 {
+        return None;
+    }
+    let cell_text = |cell: i64| {
+        (cell >= 0)
+            .then(|| screen.cell_text((cell / cols) as u16, (cell % cols) as u16))
+            .flatten()
+    };
+    (row_end - cols - width..row_end - width).find(|&start| {
+        let mut cell = start;
+        let matched = graphemes.iter().all(|(text, width)| {
+            let matched = cell_text(cell) == Some(text.as_str());
+            cell += width;
+            matched
+        });
+        matched && cell_text(cell).is_none_or(|text| text.trim().is_empty())
+    })
+}
+
+fn width_cells(boundaries: &[(usize, i64)]) -> i64 {
+    boundaries.last().map_or(0, |last| last.1)
 }
 
 fn char_byte_offset(value: &str, char_index: usize) -> Option<usize> {
@@ -697,95 +823,72 @@ pub(crate) fn divider_at(app: &App, col: u16, row: u16) -> Option<DragState> {
         })
 }
 
-/// Di chuyển con trỏ ZLE tới ô được click bằng các phím trái/phải.
-/// Chỉ hoạt động khi viewport đang ở đáy và buffer là một dòng logic.
+/// Di chuyển con trỏ ZLE tới ô được click bằng một lần cập nhật nguyên tử.
+/// Chỉ hoạt động khi shell đang chờ input và viewport ở đáy.
 #[allow(dead_code)]
 fn move_input_cursor_to(app: &mut App, pid: PaneId, click: GridPoint) -> bool {
-    let Some(pane) = app.panes.get_mut(&pid) else {
+    let Some(pane) = app.panes.get(&pid) else {
         return false;
     };
-    if pane.grid.scrollback() != 0 {
+    if pane.pending.is_some() || pane.grid.scrollback() != 0 || pane.grid.screen().hide_cursor() {
         return false;
     }
 
     let screen = pane.grid.screen();
-    let target = click_cursor_index(
+    let Some(target) = click_cursor_index(
         &pane.input.buffer,
         pane.input.cursor,
         screen.cursor_position(),
         click,
         screen.size().1,
-    );
-    let Some(target) = target else {
+        |line, row_end| locate_first_input_line(screen, line, row_end),
+    ) else {
         return false;
     };
-
     let current = pane.input.cursor.min(pane.input.buffer.chars().count());
-    let (code, count) = if target < current {
-        (KeyCode::Left, current - target)
-    } else {
-        (KeyCode::Right, target - current)
-    };
-    if count == 0 {
+    if target == current {
         return true;
     }
+    let buffer = pane.input.buffer.clone();
 
-    let mut output = Vec::with_capacity(count * 3);
-    for _ in 0..count {
-        if let Some(bytes) = pane
-            .grid
-            .encode_key(KeyEvent::new(code, KeyModifiers::NONE))
-        {
-            output.extend_from_slice(&bytes);
-        }
-    }
-    if output.is_empty() {
+    let Ok(Some(bytes)) = app.integ.prepare_zle_edit(pid.0, &buffer, target) else {
         return false;
-    }
-    pane.pty.write(&output);
+    };
+    let Some(pane) = app.panes.get_mut(&pid) else {
+        return false;
+    };
+    pane.pty.write(&bytes);
     true
 }
 
-/// Ánh xạ ô click vào chỉ số ký tự gần nhất của buffer một dòng.
-/// Vị trí đầu buffer được suy ra ngược từ cursor ZLE đang hiển thị.
+/// Ánh xạ ô click vào biên grapheme gần nhất trên cùng hàng theo bố cục
+/// `input_layout`. Biên ở cột 0 hàng kế cũng tính cho hàng này khi chỉ là wrap
+/// (không phải đầu dòng sau `\n`), để click cuối hàng đầy đặt con trỏ sau ký tự cuối.
 fn click_cursor_index(
     buffer: &str,
     current_index: usize,
     cursor: (u16, u16),
     click: GridPoint,
     cols: u16,
+    locate_first: impl FnOnce(&str, i64) -> Option<i64>,
 ) -> Option<usize> {
-    if buffer.is_empty() || cols == 0 || buffer.contains(['\n', '\t']) {
+    if buffer.is_empty() {
         return None;
     }
-
+    let boundaries = input_layout(buffer, current_index, cursor, cols, locate_first)?;
     let chars: Vec<char> = buffer.chars().collect();
-    let current_index = current_index.min(chars.len());
-    let mut boundaries = Vec::with_capacity(chars.len() + 1);
-    boundaries.push(0_i64);
-    for character in chars {
-        let width = UnicodeWidthChar::width(character).unwrap_or(0) as i64;
-        boundaries.push(boundaries.last().copied().unwrap_or(0) + width);
-    }
-
     let cols = i64::from(cols);
-    let cursor_linear = i64::from(cursor.0) * cols + i64::from(cursor.1);
-    let start = cursor_linear - boundaries[current_index];
-    let end = start + boundaries.last().copied().unwrap_or(0);
-    let first_row = start.div_euclid(cols).max(0);
-    let last_row = end.div_euclid(cols);
     let click_row = i64::from(click.row);
-    if click_row < first_row || click_row > last_row {
-        return None;
-    }
-
     // So sánh theo nửa ô để click trên ký tự wide chọn đúng nửa trái/phải.
     let click_center = (click_row * cols + i64::from(click.col)) * 2 + 1;
     boundaries
         .iter()
-        .enumerate()
-        .min_by_key(|(_, offset)| ((start + **offset) * 2 - click_center).abs())
-        .map(|(index, _)| index)
+        .filter(|(index, cell)| {
+            cell.div_euclid(cols) == click_row
+                || (*cell == (click_row + 1) * cols && *index > 0 && chars[index - 1] != '\n')
+        })
+        .min_by_key(|(_, cell)| (cell * 2 - click_center).abs())
+        .map(|(index, _)| *index)
 }
 
 pub(crate) fn pane_at(app: &App, col: u16, row: u16) -> Option<PaneId> {
@@ -902,32 +1005,38 @@ mod clipboard_tests {
         )));
     }
 
+    fn single_line(
+        buffer: &str,
+        cursor: usize,
+        cursor_pos: (u16, u16),
+        cols: u16,
+        selection: GridSelection,
+    ) -> Option<Range<usize>> {
+        input_selection_char_range(buffer, cursor, cursor_pos, cols, selection, |_, _| None)
+            .map(|(chars, _)| chars)
+    }
+
+    fn sel(anchor: (u16, u16), end: (u16, u16)) -> GridSelection {
+        GridSelection {
+            anchor: GridPoint {
+                row: anchor.0,
+                col: anchor.1,
+            },
+            end: GridPoint {
+                row: end.0,
+                col: end.1,
+            },
+        }
+    }
+
     #[test]
     fn maps_selection_inside_zle_buffer_to_character_range() {
         assert_eq!(
-            input_selection_char_range(
-                "abcdef",
-                6,
-                (0, 8),
-                10,
-                GridSelection {
-                    anchor: GridPoint { row: 0, col: 3 },
-                    end: GridPoint { row: 0, col: 4 },
-                },
-            ),
+            single_line("abcdef", 6, (0, 8), 10, sel((0, 3), (0, 4))),
             Some(1..3)
         );
         assert_eq!(
-            input_selection_char_range(
-                "abcdef",
-                6,
-                (0, 8),
-                10,
-                GridSelection {
-                    anchor: GridPoint { row: 0, col: 4 },
-                    end: GridPoint { row: 0, col: 3 },
-                },
-            ),
+            single_line("abcdef", 6, (0, 8), 10, sel((0, 4), (0, 3))),
             Some(1..3)
         );
     }
@@ -935,56 +1044,148 @@ mod clipboard_tests {
     #[test]
     fn maps_wrapped_and_wide_input_but_rejects_prompt_cells() {
         assert_eq!(
-            input_selection_char_range(
-                "abcdefgh",
-                8,
-                (2, 3),
-                5,
-                GridSelection {
-                    anchor: GridPoint { row: 1, col: 3 },
-                    end: GridPoint { row: 2, col: 1 },
-                },
-            ),
+            single_line("abcdefgh", 8, (2, 3), 5, sel((1, 3), (2, 1))),
             Some(3..7)
         );
         assert_eq!(
-            input_selection_char_range(
-                "a界b",
-                3,
-                (0, 6),
-                10,
-                GridSelection {
-                    anchor: GridPoint { row: 0, col: 4 },
-                    end: GridPoint { row: 0, col: 4 },
-                },
-            ),
+            single_line("a界b", 3, (0, 6), 10, sel((0, 4), (0, 4))),
             Some(1..2)
         );
         assert_eq!(
-            input_selection_char_range(
-                "abcdef",
-                6,
-                (0, 8),
-                10,
-                GridSelection {
-                    anchor: GridPoint { row: 0, col: 6 },
-                    end: GridPoint { row: 0, col: 9 },
-                },
-            ),
+            single_line("abcdef", 6, (0, 8), 10, sel((0, 6), (0, 9))),
             Some(4..6)
         );
         assert_eq!(
-            input_selection_char_range(
-                "abcdef",
-                6,
-                (0, 8),
-                10,
-                GridSelection {
-                    anchor: GridPoint { row: 0, col: 1 },
-                    end: GridPoint { row: 0, col: 3 },
-                },
-            ),
+            single_line("abcdef", 6, (0, 8), 10, sel((0, 1), (0, 3))),
             None
         );
+    }
+
+    #[test]
+    fn maps_multiline_buffer_using_cursor_anchor_and_first_line_locator() {
+        // "$ ab \" / "  cd \" / "  ef" — con trỏ cuối buffer, cols = 10.
+        let buffer = "ab \\\n  cd \\\n  ef";
+        let locate = |line: &str, row_end: i64| {
+            assert_eq!((line, row_end), ("ab \\", 10));
+            Some(2)
+        };
+        assert_eq!(
+            input_selection_char_range(buffer, 16, (2, 4), 10, sel((0, 2), (2, 3)), locate),
+            Some((0..16, 2..24))
+        );
+        // Kéo hết hàng giữa (kể cả ô trống) → xoá cả dòng lẫn `\n` của nó.
+        assert_eq!(
+            input_selection_char_range(buffer, 16, (2, 4), 10, sel((1, 0), (1, 9)), locate),
+            Some((5..12, 10..20))
+        );
+        // Bắt đầu từ prompt → không thuộc buffer.
+        assert_eq!(
+            input_selection_char_range(buffer, 16, (2, 4), 10, sel((0, 0), (2, 3)), locate),
+            None
+        );
+        // Không tìm được dòng đầu: chỉ các dòng sau còn chọn được.
+        assert_eq!(
+            input_selection_char_range(buffer, 16, (2, 4), 10, sel((0, 2), (2, 3)), |_, _| None),
+            None
+        );
+        assert_eq!(
+            input_selection_char_range(buffer, 16, (2, 4), 10, sel((1, 2), (2, 3)), |_, _| None),
+            Some((7..16, 12..24))
+        );
+        // Con trỏ ở dòng đầu: các dòng sau suy xuôi, không cần locator.
+        assert_eq!(
+            input_selection_char_range(buffer, 4, (0, 6), 10, sel((0, 2), (2, 3)), |_, _| {
+                panic!("không cần locator")
+            }),
+            Some((0..16, 2..24))
+        );
+    }
+
+    #[test]
+    fn multiline_layout_follows_zsh_eager_wrap() {
+        // Dòng đầu vừa đầy hàng (2 + 8 = 10 ô) → `\n` tạo một hàng trống, "x" ở hàng 2.
+        assert_eq!(
+            input_selection_char_range(
+                "abcdefgh\nx",
+                10,
+                (2, 1),
+                10,
+                sel((0, 2), (2, 0)),
+                |_, _| Some(2)
+            ),
+            Some((0..10, 2..21))
+        );
+        // Suy ngược: dòng giữa dài đúng 10 ô chiếm hàng 1, hàng 2 trống, "c" ở hàng 3.
+        let buffer = "a\nbbbbbbbbbb\nc";
+        let locate = |_: &str, row_end: i64| {
+            assert_eq!(row_end, 10);
+            Some(2)
+        };
+        assert_eq!(
+            input_selection_char_range(buffer, 14, (3, 1), 10, sel((1, 0), (1, 9)), locate),
+            Some((2..12, 10..20))
+        );
+        // Kéo qua cả hàng trống → xoá luôn `\n` của dòng đó.
+        assert_eq!(
+            input_selection_char_range(buffer, 14, (3, 1), 10, sel((1, 0), (2, 0)), locate),
+            Some((2..13, 10..30))
+        );
+    }
+
+    #[test]
+    fn click_maps_to_nearest_boundary_on_same_row_across_lines() {
+        // "$ ab \" / "  cd \" / "  ef" — con trỏ cuối buffer, cols = 10.
+        let buffer = "ab \\\n  cd \\\n  ef";
+        let locate = |_: &str, _: i64| Some(2);
+        let click = |row, col| GridPoint { row, col };
+        assert_eq!(
+            click_cursor_index(buffer, 16, (2, 4), click(1, 3), 10, locate),
+            Some(8)
+        );
+        // Click vào vùng trống sau dòng → cuối dòng đó (trước `\n`), không nhảy sang dòng sau.
+        assert_eq!(
+            click_cursor_index(buffer, 16, (2, 4), click(1, 9), 10, locate),
+            Some(11)
+        );
+        assert_eq!(
+            click_cursor_index(buffer, 16, (2, 4), click(0, 0), 10, locate),
+            Some(0)
+        );
+        assert_eq!(
+            click_cursor_index(buffer, 16, (2, 4), click(3, 0), 10, locate),
+            None
+        );
+        // Không tìm được dòng đầu → click dòng đầu bị từ chối, dòng sau vẫn được.
+        assert_eq!(
+            click_cursor_index(buffer, 16, (2, 4), click(0, 3), 10, |_, _| None),
+            None
+        );
+        assert_eq!(
+            click_cursor_index(buffer, 16, (2, 4), click(2, 2), 10, |_, _| None),
+            Some(14)
+        );
+        // Dòng wrap: click cuối hàng đầy → sau ký tự cuối của hàng (ở cột 0 hàng kế).
+        assert_eq!(
+            click_cursor_index("abcdefgh", 8, (2, 3), click(1, 4), 5, |_, _| None),
+            Some(4)
+        );
+        assert_eq!(
+            click_cursor_index("a界b", 3, (0, 6), click(0, 4), 10, |_, _| None),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn locates_first_input_line_on_screen_after_prompt() {
+        let mut grid = crate::term::TermGrid::new(4, 12, 0);
+        grid.process(b"$ ab \\\r\n  cd");
+        assert_eq!(locate_first_input_line(grid.screen(), "ab \\", 12), Some(2));
+        assert_eq!(locate_first_input_line(grid.screen(), "zz", 12), None);
+        assert_eq!(locate_first_input_line(grid.screen(), "", 12), None);
+
+        // Prompt chứa cùng text: bỏ qua vì ô kế tiếp không trống; RPROMPT bên phải bị bỏ qua.
+        let mut grid = crate::term::TermGrid::new(4, 12, 0);
+        grid.process(b"ab$ ab    ab\r\ncd");
+        assert_eq!(locate_first_input_line(grid.screen(), "ab", 12), Some(4));
     }
 }

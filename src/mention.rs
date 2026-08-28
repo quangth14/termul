@@ -63,6 +63,12 @@ pub(crate) fn rebuild_mention(app: &mut App) -> bool {
         app.mention = None;
         return false;
     };
+    if token.query.is_empty() {
+        // `@` vẫn chiếm luồng mention, nhưng chỉ bắt đầu quét sau ký tự kế tiếp.
+        app.mention_generation = app.mention_generation.wrapping_add(1);
+        app.mention = None;
+        return true;
+    }
     if pane.cwd.is_empty() {
         app.mention = None;
         return true;
@@ -243,6 +249,18 @@ mod tests {
                 start: 4,
                 end: 16,
                 query: "src/ma".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn token_chi_co_at_chua_co_query() {
+        assert_eq!(
+            mention_token("@", 1),
+            Some(MentionToken {
+                start: 0,
+                end: 1,
+                query: String::new(),
             })
         );
     }

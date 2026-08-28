@@ -1704,7 +1704,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "toml",
- "unicode-width",
 ]
 
 [[package]]

@@ -73,7 +73,7 @@ pub(crate) fn suggest_accept(app: &mut App) {
         if let Some(bytes) = atomic_edit {
             pane.pty.write(&bytes);
         } else {
-            let mut bytes = vec![0x01, 0x0b]; // Fallback cho history nhiều dòng/tab.
+            let mut bytes = vec![0x01, 0x0b]; // Fallback khi không ghi được edit file.
             bytes.extend_from_slice(full.as_bytes());
             pane.pty.write(&bytes);
         }

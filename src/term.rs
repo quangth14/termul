@@ -942,6 +942,11 @@ impl TermScreen {
             .then(|| &self.cells[row as usize * self.cols as usize + col as usize])
     }
 
+    /// Text của một ô trong viewport (rỗng nếu ô trống hoặc là spacer sau ký tự rộng).
+    pub fn cell_text(&self, row: u16, col: u16) -> Option<&str> {
+        self.cell(row, col).map(|cell| cell.contents.as_str())
+    }
+
     /// Lấy nội dung text của vùng chọn trong viewport hiện tại.
     pub fn selected_text(&self, selection: GridSelection) -> String {
         let (start, end) = if selection.anchor <= selection.end {

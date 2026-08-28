@@ -1,5 +1,3 @@
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 **termul** là một terminal multiplexer viết bằng Rust (edition 2024), chạy trong terminal, lấy cảm hứng từ herdr/tmux. Điểm khác biệt chính: ghi nhớ lệnh đã chạy vào SQLite rồi gợi ý autocomplete kiểu popup VSCode ngay khi gõ. Toàn bộ comment/doc trong repo viết bằng tiếng Việt — giữ nguyên quy ước này khi thêm code.
 
 ## Lệnh thường dùng

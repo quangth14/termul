@@ -46,9 +46,10 @@ if [[ -o interactive ]]; then
   }
 
   # Đọc edit đã được termul ghi riêng cho pane rồi cập nhật ZLE nguyên tử.
+  # Dòng đầu file là CURSOR, phần còn lại (tới EOF) là BUFFER — có thể nhiều dòng.
   _termul_apply_edit() {
     local cursor buffer
-    IFS=$'\t' read -r cursor buffer <"$TERMUL_EDIT_FILE" || return
+    { IFS= read -r cursor; IFS= read -r -d '' buffer; } <"$TERMUL_EDIT_FILE"
     [[ "$cursor" == <-> ]] || return
     printf '\e[?2026h' >/dev/tty
     BUFFER="$buffer"
@@ -58,12 +59,27 @@ if [[ -o interactive ]]; then
     printf '\e[?2026l' >/dev/tty
   }
 
+  # Enter khi dòng kết thúc bằng `\` (số lẻ): chèn xuống dòng vào BUFFER thay vì
+  # accept-line, để lệnh nhiều dòng gõ tay vẫn là một buffer (sửa/cut được như paste)
+  # thay vì bị zsh đẩy các dòng trước vào PREBUFFER read-only.
+  _termul_accept_line() {
+    local trailing=${BUFFER##*[^\\]}
+    if (( ${#trailing} % 2 )); then
+      BUFFER+=$'\n'
+      CURSOR=${#BUFFER}
+      return
+    fi
+    zle _termul_orig_accept_line -- "$@"
+  }
+
   # Cài hook sau khi .zshrc của user nạp xong (một lần) để không bị plugin ghi đè
   _termul_init() {
     add-zsh-hook -d precmd _termul_init
     add-zsh-hook preexec _termul_preexec
     add-zsh-hook precmd _termul_precmd
     add-zle-hook-widget line-pre-redraw _termul_report_buffer
+    zle -A accept-line _termul_orig_accept_line
+    zle -N accept-line _termul_accept_line
     zle -N _termul_apply_edit
     bindkey -M emacs $'\e[99~' _termul_apply_edit
     bindkey -M viins $'\e[99~' _termul_apply_edit
@@ -119,10 +135,10 @@ impl ShellIntegration {
         buffer: &str,
         cursor: usize,
     ) -> Result<Option<Vec<u8>>> {
-        if buffer.contains(['\t', '\n', '\r']) || cursor > buffer.chars().count() {
+        if buffer.contains('\0') || cursor > buffer.chars().count() {
             return Ok(None);
         }
-        fs::write(self.edit_file(pane_id), format!("{cursor}\t{buffer}\n"))?;
+        fs::write(self.edit_file(pane_id), format!("{cursor}\n{buffer}"))?;
         Ok(Some(b"\x1b[99~".to_vec()))
     }
 
@@ -150,7 +166,15 @@ mod tests {
     }
 
     #[test]
-    fn prepares_atomic_zle_edit_and_rejects_multiline_payload() {
+    fn wraps_accept_line_to_keep_backslash_continuation_in_buffer() {
+        let integration = ShellIntegration::setup().unwrap();
+        let script = std::fs::read_to_string(integration.dir.join(".zshenv")).unwrap();
+        assert!(script.contains("zle -A accept-line _termul_orig_accept_line"));
+        assert!(script.contains("zle -N accept-line _termul_accept_line"));
+    }
+
+    #[test]
+    fn prepares_atomic_zle_edit_including_multiline_payload() {
         let integration = ShellIntegration::setup().unwrap();
         assert_eq!(
             integration.prepare_zle_edit(7, "echo hé", 4).unwrap(),
@@ -158,12 +182,19 @@ mod tests {
         );
         assert_eq!(
             std::fs::read(integration.edit_file(7)).unwrap(),
-            b"4\techo h\xc3\xa9\n"
+            b"4\necho h\xc3\xa9"
         );
         assert_eq!(
-            integration.prepare_zle_edit(7, "echo\nnext", 4).unwrap(),
-            None
+            integration
+                .prepare_zle_edit(7, "echo \\\n\tnext\n", 4)
+                .unwrap(),
+            Some(b"\x1b[99~".to_vec())
+        );
+        assert_eq!(
+            std::fs::read(integration.edit_file(7)).unwrap(),
+            b"4\necho \\\n\tnext\n"
         );
         assert_eq!(integration.prepare_zle_edit(7, "echo", 5).unwrap(), None);
+        assert_eq!(integration.prepare_zle_edit(7, "a\0b", 0).unwrap(), None);
     }
 }
