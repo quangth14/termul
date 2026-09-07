@@ -14,7 +14,7 @@ Triết lý thiết kế:
 | Nhóm | Mô tả |
 |------|-------|
 | **Pane** | Chia dọc/ngang theo cây nhị phân (tiling), click chọn, kéo divider để resize, chuột phải để split/close |
-| **Tab** | Tabbar ở trên cùng (tab active nền tím mauve), tạo/đổi tên/đóng tab, chuột phải mở menu |
+| **Tab** | Tabbar ở trên cùng (tab active nền tím mauve), tạo/đổi tên/đóng tab, chuột phải mở menu; `prefix + 1..9` nhảy thẳng tới tab thứ N (kiểu tmux) |
 | **Command memory** | Mỗi lệnh chạy xong được ghi vào SQLite kèm `cwd`, exit code, thời lượng — qua shell integration OSC |
 | **Autocomplete popup** | Gõ tới đâu gợi ý tới đó; khớp kiểu *contains*, xếp hạng theo **frecency** (tần suất × độ mới × ưu tiên cùng thư mục) |
 | **History palette** | Bảng tìm kiếm mờ (fuzzy) toàn bộ lịch sử, mở bằng `Ctrl+Backtick r` |

@@ -158,7 +158,7 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
     let first_id = PaneId(0);
     let initial_cwd = std::env::current_dir()?.to_string_lossy().into_owned();
     let env = integ.env_for(&shell, first_id.0);
-    let pty = PtySession::spawn(first_id, init_rows, init_cols, &shell, &env, tx.clone())?;
+    let pty = PtySession::spawn(first_id, init_rows, init_cols, &shell, &env, None, tx.clone())?;
     spawn_input_thread(tx.clone());
 
     let mut app = App {
@@ -432,7 +432,7 @@ mod tests {
     fn one_pane_app() -> App {
         let (tx, _rx) = mpsc::channel();
         let pid = PaneId(0);
-        let pty = PtySession::spawn(pid, 24, 80, "/bin/sh", &[], tx.clone()).expect("spawn pty");
+        let pty = PtySession::spawn(pid, 24, 80, "/bin/sh", &[], None, tx.clone()).expect("spawn pty");
         App {
             panes: HashMap::from([(
                 pid,
@@ -570,7 +570,7 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         let env = vec![("ZDOTDIR".to_string(), dir.to_string_lossy().to_string())];
-        let mut pty = PtySession::spawn(PaneId(0), 24, 80, "/bin/zsh", &env, tx).unwrap();
+        let mut pty = PtySession::spawn(PaneId(0), 24, 80, "/bin/zsh", &env, None, tx).unwrap();
         std::thread::sleep(Duration::from_millis(600));
         pty.write(b"echo tc_probe\n");
 
@@ -627,7 +627,7 @@ mod tests {
                 dir.join("edit").to_string_lossy().to_string(),
             ),
         ];
-        let mut pty = PtySession::spawn(PaneId(0), 24, 80, "/bin/zsh", &env, tx).unwrap();
+        let mut pty = PtySession::spawn(PaneId(0), 24, 80, "/bin/zsh", &env, None, tx).unwrap();
         std::thread::sleep(Duration::from_millis(600));
         pty.write(b"abcdefgh"); // gõ một dòng dài, KHÔNG Enter
 
@@ -716,7 +716,7 @@ mod tests {
     fn pty_output_parses_through_emulator() {
         let (tx, rx) = mpsc::channel();
         let pid = PaneId(7);
-        let mut pty = PtySession::spawn(pid, 24, 80, "/bin/sh", &[], tx).expect("spawn pty");
+        let mut pty = PtySession::spawn(pid, 24, 80, "/bin/sh", &[], None, tx).expect("spawn pty");
 
         std::thread::sleep(Duration::from_millis(300));
         pty.write(b"echo RESULT=$((6*7))\n");

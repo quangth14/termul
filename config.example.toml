@@ -41,6 +41,7 @@ close_pane = "x"           # close focused pane
 tab_new = "c"              # new tab
 tab_next = "n"             # next tab
 tab_prev = "p"             # previous tab
+# prefix + 1..9 nhảy thẳng tới tab thứ N (cố định, không cấu hình được)
 tab_rename = ","           # rename current tab
 tab_close = "&"            # close current tab
 palette = "r"              # open history palette

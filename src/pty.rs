@@ -27,6 +27,7 @@ impl PtySession {
         cols: u16,
         shell: &str,
         extra_env: &[(String, String)],
+        cwd: Option<&str>,
         tx: Sender<AppEvent>,
     ) -> Result<Self> {
         let pty_system = native_pty_system();
@@ -49,8 +50,15 @@ impl PtySession {
         for (k, v) in extra_env {
             cmd.env(k, v);
         }
-        if let Ok(cwd) = std::env::current_dir() {
-            cmd.cwd(cwd);
+        // cwd chỉ định (ví dụ kế thừa từ pane focus khi split); nếu không có thì
+        // rơi về thư mục làm việc của tiến trình.
+        match cwd {
+            Some(dir) => cmd.cwd(dir),
+            None => {
+                if let Ok(dir) = std::env::current_dir() {
+                    cmd.cwd(dir);
+                }
+            }
         }
         let child = pair.slave.spawn_command(cmd)?;
         // Đóng slave ở tiến trình cha để nhận EOF khi shell thoát.

@@ -115,12 +115,16 @@ pub(crate) fn build_status_segs(
 
 // ── Vòng đời pane ───────────────────────────────────────────────────
 
-pub(crate) fn spawn_pane(app: &mut App) -> Option<PaneId> {
+pub(crate) fn spawn_pane(app: &mut App, start_cwd: Option<String>) -> Option<PaneId> {
     let id = PaneId(app.next_pane);
-    let cwd = std::env::current_dir().ok()?.to_string_lossy().into_owned();
+    // cwd kế thừa (ví dụ từ pane focus khi split); nếu không có thì dùng cwd tiến trình.
+    let cwd = match start_cwd {
+        Some(c) => c,
+        None => std::env::current_dir().ok()?.to_string_lossy().into_owned(),
+    };
     // Kích thước khởi tạo tuỳ ý — recompute() sẽ resize lại ngay.
     let env = app.integ.env_for(&app.shell, id.0);
-    let pty = PtySession::spawn(id, 24, 80, &app.shell, &env, app.tx.clone()).ok()?;
+    let pty = PtySession::spawn(id, 24, 80, &app.shell, &env, Some(cwd.as_str()), app.tx.clone()).ok()?;
     app.next_pane += 1;
     app.panes.insert(
         id,
@@ -164,7 +168,9 @@ pub(crate) fn do_split(app: &mut App, target: PaneId, dir: SplitDir) {
     let Some(ti) = tab_index_of(app, target) else {
         return;
     };
-    let Some(new_pane) = spawn_pane(app) else {
+    // Pane mới kế thừa cwd của pane đang split để mở ra ở cùng thư mục.
+    let start_cwd = app.panes.get(&target).map(|p| p.cwd.clone());
+    let Some(new_pane) = spawn_pane(app, start_cwd) else {
         return;
     };
     let sid = SplitId(app.next_split);
@@ -213,7 +219,7 @@ pub(crate) fn do_close(app: &mut App, pid: PaneId) {
 // ── Vòng đời tab ────────────────────────────────────────────────────
 
 pub(crate) fn new_tab(app: &mut App) {
-    let Some(pid) = spawn_pane(app) else {
+    let Some(pid) = spawn_pane(app, None) else {
         return;
     };
     let name = app.next_tab.to_string();

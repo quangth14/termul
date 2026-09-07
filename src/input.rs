@@ -540,7 +540,12 @@ pub(crate) fn handle_prefix(app: &mut App, key: KeyEvent) {
         KeyCode::Down => focus_dir(app, Dir::Down),
         // Các phím lệnh 1 ký tự (cấu hình được)
         KeyCode::Char(c) => {
-            if c == k.split_right {
+            // prefix + số (1..9): nhảy thẳng tới tab thứ N (1-based), theo lối tmux
+            if let Some(d) = c.to_digit(10)
+                && (1..=9).contains(&d)
+            {
+                switch_tab(app, (d - 1) as usize);
+            } else if c == k.split_right {
                 do_split(app, focus, SplitDir::LeftRight);
             } else if c == k.split_down {
                 do_split(app, focus, SplitDir::TopBottom);
