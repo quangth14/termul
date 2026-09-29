@@ -63,6 +63,13 @@ pub(crate) fn handle_event(app: &mut App, ev: AppEvent) {
             }
         }
         AppEvent::Term(Event::Resize(_, _)) => {}
+        AppEvent::HostCapabilities(capabilities) => {
+            app.host_terminal_theme = capabilities.theme;
+            app.cell_pixel_size = capabilities.cell_size;
+            for pane in app.panes.values_mut() {
+                pane.grid.apply_host_capabilities(capabilities);
+            }
+        }
         AppEvent::MentionReady(result) => {
             if result.pane == active_focus(app)
                 && result.generation == app.mention_generation

@@ -14,6 +14,7 @@ mod mention;
 mod osc;
 mod palette;
 mod pty;
+mod raw_input;
 mod rename;
 mod session;
 mod shell;
@@ -26,7 +27,6 @@ mod xtgettcap;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -152,14 +152,13 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
     let integ = ShellIntegration::setup()?;
     let history = HistoryStore::open_default()?;
     let cfg = Config::load();
-    let host_capabilities = HostTerminalCapabilities::query();
+    let host_capabilities = HostTerminalCapabilities::default();
     let host_terminal_theme = host_capabilities.theme;
 
     let first_id = PaneId(0);
     let initial_cwd = std::env::current_dir()?.to_string_lossy().into_owned();
     let env = integ.env_for(&shell, first_id.0);
     let pty = PtySession::spawn(first_id, init_rows, init_cols, &shell, &env, None, tx.clone())?;
-    spawn_input_thread(tx.clone());
 
     let mut app = App {
         panes: HashMap::from([(
@@ -219,6 +218,8 @@ fn run(terminal: &mut Terminal<Backend>) -> Result<()> {
     };
 
     draw(terminal, &mut app)?;
+    raw_input::spawn_input_thread(app.tx.clone());
+    HostTerminalCapabilities::request();
 
     let mut last_render_at = Instant::now();
     let mut needs_render = false;
@@ -291,16 +292,6 @@ fn render_wait(
     } else {
         Some(MIN_RENDER_INTERVAL.saturating_sub(elapsed))
     }
-}
-
-fn spawn_input_thread(tx: Sender<AppEvent>) {
-    thread::spawn(move || {
-        while let Ok(ev) = crossterm::event::read() {
-            if tx.send(AppEvent::Term(ev)).is_err() {
-                break;
-            }
-        }
-    });
 }
 
 #[cfg(test)]

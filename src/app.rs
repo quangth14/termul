@@ -27,6 +27,8 @@ pub(crate) enum AppEvent {
     PtyClosed(PaneId),
     /// Sự kiện terminal (phím/chuột/resize) từ crossterm.
     Term(Event),
+    /// Capability của terminal host do raw input reader nhận được.
+    HostCapabilities(crate::terminal_theme::HostTerminalCapabilities),
     /// Kết quả quét file cho popup mention từ worker nền.
     MentionReady(MentionResult),
 }

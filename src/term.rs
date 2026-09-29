@@ -21,7 +21,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
-use crate::terminal_theme::{CellPixelSize, HostTerminalTheme};
+use crate::terminal_theme::{CellPixelSize, HostTerminalCapabilities, HostTerminalTheme};
 use crate::xtgettcap::XtgettcapTracker;
 
 /// Toạ độ một ô trong viewport terminal.
@@ -346,6 +346,16 @@ impl TermGrid {
             .and_then(|terminal| terminal.set_default_color_palette(Some(palette)))
             .expect("không thể áp bảng màu terminal host");
         self.refresh();
+    }
+
+    /// Cập nhật capability của terminal host sau khi grid đã được vẽ lần đầu.
+    pub fn apply_host_capabilities(&mut self, capabilities: HostTerminalCapabilities) {
+        self.cell_size = capabilities.cell_size;
+        if let Ok(mut size) = self.size_report.lock() {
+            size.cell_width = capabilities.cell_size.width;
+            size.cell_height = capabilities.cell_size.height;
+        }
+        self.apply_host_theme(capabilities.theme);
     }
 
     pub fn process(&mut self, bytes: &[u8]) -> TerminalEffects {
@@ -1338,6 +1348,29 @@ mod tests {
         assert!(responses
             .windows(b"\x1b[8;24;80t".len())
             .any(|part| part == b"\x1b[8;24;80t"));
+    }
+
+    #[test]
+    fn applies_host_capabilities_after_grid_creation() {
+        let mut grid = TermGrid::new(24, 80, TEST_SCROLLBACK_LIMIT_BYTES);
+        let mut theme = HostTerminalTheme::default();
+        theme.palette[7] = Some(RgbColor { r: 12, g: 34, b: 56 });
+        grid.apply_host_capabilities(HostTerminalCapabilities {
+            theme,
+            cell_size: CellPixelSize {
+                width: 9,
+                height: 18,
+            },
+        });
+
+        let effects = grid.process(b"\x1b[16t\x1b]4;7;?\x1b\\");
+        let responses = effects.pty_responses.concat();
+        assert!(responses
+            .windows(b"\x1b[6;18;9t".len())
+            .any(|part| part == b"\x1b[6;18;9t"));
+        assert!(responses
+            .windows(b"\x1b]4;7;rgb:0c0c/2222/3838".len())
+            .any(|part| part == b"\x1b]4;7;rgb:0c0c/2222/3838"));
     }
 
     #[test]

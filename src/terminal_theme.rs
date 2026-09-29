@@ -67,9 +67,25 @@ pub(crate) struct HostTerminalCapabilities {
 }
 
 impl HostTerminalCapabilities {
-    /// Hỏi màu và kích thước cell của terminal host.
-    pub(crate) fn query() -> Self {
-        query_host_terminal_capabilities().unwrap_or_default()
+    /// Gửi yêu cầu màu và kích thước cell; response được raw input reader nhận sau đó.
+    pub(crate) fn request() {
+        use std::io::{IsTerminal, Write};
+
+        let mut stdout = std::io::stdout();
+        if stdout.is_terminal() {
+            let _ = stdout.write_all(host_terminal_query_sequence().as_bytes());
+            let _ = stdout.flush();
+        }
+    }
+
+    /// Áp dụng một response OSC hoặc CSI và báo liệu capability có thay đổi không.
+    pub(crate) fn apply_response(&mut self, response: &[u8]) -> bool {
+        let previous = *self;
+        self.theme.update_from_sequence(response);
+        if let Some(cell_size) = parse_cell_pixel_size(response) {
+            self.cell_size = cell_size;
+        }
+        *self != previous
     }
 }
 
@@ -116,63 +132,7 @@ fn parse_hex_component(component: &str) -> Option<u8> {
     Some(((value * 255 + max / 2) / max) as u8)
 }
 
-#[cfg(unix)]
-fn query_host_terminal_capabilities() -> std::io::Result<HostTerminalCapabilities> {
-    use std::fs::OpenOptions;
-    use std::io::{IsTerminal, Read, Write};
-    use std::os::fd::AsRawFd;
-    use std::time::{Duration, Instant};
-
-    if !std::io::stdout().is_terminal() {
-        return Ok(HostTerminalCapabilities::default());
-    }
-
-    let mut tty = OpenOptions::new().read(true).open("/dev/tty")?;
-    let mut stdout = std::io::stdout();
-    stdout.write_all(host_terminal_query_sequence().as_bytes())?;
-    stdout.flush()?;
-
-    let started = Instant::now();
-    let mut last_data = None;
-    let mut bytes = Vec::new();
-    loop {
-        let elapsed = started.elapsed();
-        if elapsed >= Duration::from_millis(400)
-            || last_data.is_some_and(|last: Instant| last.elapsed() >= Duration::from_millis(40))
-        {
-            break;
-        }
-        let timeout = if last_data.is_some() { 40 } else { 120 };
-        let mut poll_fd = libc::pollfd {
-            fd: tty.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: poll_fd trỏ tới một phần tử hợp lệ trong suốt lời gọi poll.
-        let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout) };
-        if ready <= 0 {
-            if last_data.is_none() {
-                break;
-            }
-            continue;
-        }
-        let mut chunk = [0u8; 8192];
-        let count = tty.read(&mut chunk)?;
-        if count == 0 {
-            break;
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        last_data = Some(Instant::now());
-    }
-
-    Ok(parse_host_terminal_capabilities(&bytes))
-}
-
-#[cfg(not(unix))]
-fn query_host_terminal_capabilities() -> std::io::Result<HostTerminalCapabilities> {
-    Ok(HostTerminalCapabilities::default())
-}
-
+#[cfg(test)]
 fn parse_host_terminal_capabilities(bytes: &[u8]) -> HostTerminalCapabilities {
     HostTerminalCapabilities {
         theme: parse_host_terminal_theme(bytes),
@@ -199,6 +159,7 @@ fn parse_cell_pixel_size(bytes: &[u8]) -> Option<CellPixelSize> {
     None
 }
 
+#[cfg(test)]
 fn parse_host_terminal_theme(bytes: &[u8]) -> HostTerminalTheme {
     let mut theme = HostTerminalTheme::default();
     let mut offset = 0;
@@ -287,5 +248,6 @@ mod tests {
         assert!(query.contains("\x1b[16t"));
         assert!(query.ends_with("\x1b]4;255;?\x1b\\"));
         assert_eq!(query.matches("\x1b]4;").count(), 256);
+        assert_eq!(query.matches(";?").count(), 259);
     }
 }
