@@ -123,11 +123,17 @@ pub(crate) fn draw(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()
             let style = if seg.active { active_bg } else { bar_bg };
 
             if seg.active {
+                // Đường accent trên tab active: gạch chân SGR (mảnh, do terminal vẽ)
+                // trên hàng space, thay vì ký tự tổ hợp U+0332 — combining mark bị
+                // render lệch cột/vị trí trên Alacritty và VSCode terminal.
                 frame.buffer_mut().set_string(
                     seg.x,
                     app.status_y - 1,
-                    underline_each_char(" ").repeat(seg.text.len()),
-                    Style::default().bg(bg).fg(app.cfg.accent),
+                    " ".repeat(seg.text.chars().count()),
+                    Style::default()
+                        .bg(bg)
+                        .fg(app.cfg.accent)
+                        .add_modifier(Modifier::UNDERLINED),
                 );
             }
 
@@ -333,8 +339,4 @@ pub(crate) fn truncate_pad(s: &str, width: usize) -> String {
         out.extend(std::iter::repeat_n(' ', width - len));
     }
     out
-}
-
-fn underline_each_char(input: &str) -> String {
-    input.chars().flat_map(|ch| [ch, '\u{0332}']).collect()
 }
